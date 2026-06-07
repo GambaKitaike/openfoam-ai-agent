@@ -1,0 +1,1 @@
+"""OpenFOAM AI Agent パッケージ"""

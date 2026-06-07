@@ -1,0 +1,47 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Version:  {{ "v" + "2512" }}
+    \\  /    A nd           | Website:  www.openfoam.com
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      controlDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+// 解析: {{ description }}
+
+application     {{ solver }};
+
+startFrom       startTime;
+startTime       0;
+stopAt          endTime;
+endTime         {{ end_time }};
+
+deltaT          {{ delta_t }};
+
+writeControl    {% if steady_state %}timeStep{% else %}adjustableRunTime{% endif %};
+writeInterval   {{ write_interval }};
+purgeWrite      {% if steady_state %}0{% else %}5{% endif %};  // 非定常: 直近5タイムステップのみ保持
+
+{% if not steady_state %}
+adjustTimeStep  yes;
+maxCo           0.9;
+maxAlphaCo      0.9;
+maxDeltaT       {{ delta_t * 10 }};
+{% endif %}
+
+writeFormat     ascii;
+writePrecision  6;
+writeCompression off;
+
+timeFormat      general;
+timePrecision   6;
+
+runTimeModifiable true;
+
+// ************************************************************************* //

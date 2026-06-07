@@ -1,0 +1,62 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     |
+    \\  /    A nd           |
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      k;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+// k = 1.5 * (U * I)^2,  I = 5%
+{% set k_val = (1.5 * (inlet_velocity * 0.05) ** 2) | round(6) %}
+{% set is_2d = (case_type == "channel_2d") %}
+{% set is_snappy = case_type in ["external_snappy", "snappy_external"] %}
+{% set is_snappy_2d = (case_type == "snappy_2d") %}
+
+dimensions      [0 2 -2 0 0 0 0];
+
+internalField   uniform {{ k_val }};
+
+boundaryField
+{
+    inlet  { type fixedValue; value uniform {{ k_val }}; }
+    outlet { type zeroGradient; }
+
+{% if is_snappy_2d %}
+    top    { type symmetryPlane; }
+    bottom { type symmetryPlane; }
+    front  { type empty; }
+    back   { type empty; }
+
+    {{ snappy_object_name }}    { type kqRWallFunction; value uniform {{ k_val }}; }
+
+{% elif is_2d %}
+    top    { type kqRWallFunction; value uniform {{ k_val }}; }
+    bottom { type kqRWallFunction; value uniform {{ k_val }}; }
+    front  { type empty; }
+    back   { type empty; }
+
+{% elif is_snappy %}
+    top    { type symmetryPlane; }
+    bottom { type symmetryPlane; }
+    front  { type symmetryPlane; }
+    back   { type symmetryPlane; }
+
+    {{ snappy_object_name }}    { type kqRWallFunction; value uniform {{ k_val }}; }
+
+{% else %}{# channel_3d / heat_transfer #}
+    top    { type kqRWallFunction; value uniform {{ k_val }}; }
+    bottom { type kqRWallFunction; value uniform {{ k_val }}; }
+    front  { type kqRWallFunction; value uniform {{ k_val }}; }
+    back   { type kqRWallFunction; value uniform {{ k_val }}; }
+
+{% endif %}
+}
+
+// ************************************************************************* //

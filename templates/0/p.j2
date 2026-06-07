@@ -1,0 +1,60 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     |
+    \\  /    A nd           |
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      p;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+{% set is_2d = (case_type == "channel_2d") %}
+{% set is_snappy = case_type in ["external_snappy", "snappy_external"] %}
+{% set is_snappy_2d = (case_type == "snappy_2d") %}
+
+dimensions      [0 2 -2 0 0 0 0];
+
+internalField   uniform 0;
+
+boundaryField
+{
+    inlet  { type zeroGradient; }
+    outlet { type fixedValue; value uniform 0; }
+
+{% if is_snappy_2d %}
+    top    { type symmetryPlane; }
+    bottom { type symmetryPlane; }
+    front  { type empty; }
+    back   { type empty; }
+
+    {{ snappy_object_name }}    { type zeroGradient; }
+
+{% elif is_2d %}
+    top    { type zeroGradient; }
+    bottom { type zeroGradient; }
+    front  { type empty; }
+    back   { type empty; }
+
+{% elif is_snappy %}
+    top    { type symmetryPlane; }
+    bottom { type symmetryPlane; }
+    front  { type symmetryPlane; }
+    back   { type symmetryPlane; }
+
+    {{ snappy_object_name }}    { type zeroGradient; }
+
+{% else %}{# channel_3d / heat_transfer #}
+    top    { type zeroGradient; }
+    bottom { type zeroGradient; }
+    front  { type zeroGradient; }
+    back   { type zeroGradient; }
+
+{% endif %}
+}
+
+// ************************************************************************* //

@@ -1,0 +1,19 @@
+# LLM クライアント
+openai>=1.30.0
+anthropic>=0.28.0
+
+# RAG
+chromadb>=0.5.0
+requests>=2.32.0           # Web スクレイピング
+beautifulsoup4>=4.12.0
+
+# ユーティリティ
+python-dotenv>=1.0.0       # .env 読み込み
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+jinja2>=3.1.4              # テンプレートレンダリング
+rich>=13.7.0               # ターミナル出力
+typer>=0.12.0              # CLI
+
+# 開発ツール
+pytest>=8.2.0

@@ -1,0 +1,101 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     |
+    \\  /    A nd           |
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      blockMeshDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+// 2D snappyHexMesh 用 背景メッシュ（z 方向 1 セル, front/back = empty）
+// STL: {{ stl_name }}  |  流れ方向: +x  鉛直方向: +y  (z は奥行き方向 = empty)
+//
+// 計算領域: x=[{{ x_min }}, {{ x_max }}], y=[{{ y_min }}, {{ y_max }}], z=[0, 0.01]
+// セル数: {{ nx }} x {{ ny }} x 1
+
+convertToMeters 1.0;
+
+vertices
+(
+    ( {{ x_min }} {{ y_min }} 0    )   // 0
+    ( {{ x_max }} {{ y_min }} 0    )   // 1
+    ( {{ x_max }} {{ y_max }} 0    )   // 2
+    ( {{ x_min }} {{ y_max }} 0    )   // 3
+    ( {{ x_min }} {{ y_min }} 0.01 )   // 4
+    ( {{ x_max }} {{ y_min }} 0.01 )   // 5
+    ( {{ x_max }} {{ y_max }} 0.01 )   // 6
+    ( {{ x_min }} {{ y_max }} 0.01 )   // 7
+);
+
+blocks
+(
+    hex (0 1 2 3 4 5 6 7) ({{ nx }} {{ ny }} 1) simpleGrading (1 1 1)
+);
+
+edges
+(
+);
+
+boundary
+(
+    inlet
+    {
+        type patch;
+        faces
+        (
+            (0 4 7 3)
+        );
+    }
+    outlet
+    {
+        type patch;
+        faces
+        (
+            (1 2 6 5)
+        );
+    }
+    top
+    {
+        type symmetryPlane;
+        faces
+        (
+            (3 7 6 2)
+        );
+    }
+    bottom
+    {
+        type symmetryPlane;
+        faces
+        (
+            (0 1 5 4)
+        );
+    }
+    front
+    {
+        type empty;
+        faces
+        (
+            (4 5 6 7)
+        );
+    }
+    back
+    {
+        type empty;
+        faces
+        (
+            (0 3 2 1)
+        );
+    }
+);
+
+mergePatchPairs
+(
+);
+
+// ************************************************************************* //
