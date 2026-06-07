@@ -30,9 +30,10 @@ purgeWrite      {% if steady_state %}0{% else %}5{% endif %};  // 非定常: 直
 
 {% if not steady_state %}
 adjustTimeStep  yes;
-maxCo           0.9;
-maxAlphaCo      0.9;
-maxDeltaT       {{ delta_t * 10 }};
+maxCo           0.5;   // 保守的設定: snappyHexMesh の極細セル対策
+maxAlphaCo      0.5;
+// maxDeltaT: 初期 deltaT の 100 倍まで。急激な増大を防ぐ
+maxDeltaT       {{ "%.6g" | format(delta_t * 100) }};
 {% endif %}
 
 writeFormat     ascii;

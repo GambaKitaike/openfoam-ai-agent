@@ -13,7 +13,8 @@ FoamFile
     object      fvSolution;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
-{% set has_wall = case_type in ["channel_2d", "channel_3d", "external_snappy", "snappy_external", "heat_transfer"] %}
+{% set has_wall = case_type in ["channel_2d", "channel_3d", "external_snappy", "snappy_external", "snappy_2d", "heat_transfer"] %}
+{% set is_snappy = case_type in ["external_snappy", "snappy_external", "snappy_2d"] %}
 
 solvers
 {
@@ -104,9 +105,18 @@ relaxationFactors
 {% else %}
 PIMPLE
 {
+{% if is_snappy %}
+    // snappyHexMesh（極細セルあり）: 多めのCorrectorで安定化
+    nOuterCorrectors    5;
+    nCorrectors         3;
+    nNonOrthogonalCorrectors 2;
+{% else %}
     nOuterCorrectors    3;
     nCorrectors         2;
     nNonOrthogonalCorrectors 1;
+{% endif %}
+    // Courant 爆発時の安全弁: 残差が発散したら時間刻みを半減
+    maxCo               0.9;
 {% if not has_wall %}
     pRefCell            0;
     pRefValue           0;
@@ -117,9 +127,16 @@ relaxationFactors
 {
     equations
     {
+{% if is_snappy %}
+        // snappy: 保守的な緩和係数で初期過渡を安定化
+        U               0.7;
+        k               0.7;
+        omega           0.7;
+{% else %}
         U               0.9;
         k               0.9;
         omega           0.9;
+{% endif %}
     }
 }
 {% endif %}

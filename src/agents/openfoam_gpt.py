@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 from ..config import Settings
+from ..error_fixer import apply_rule_based_fixes
 from ..llm_client import LLMClient
 from ..models import (
     SimulationSpec, EnrichedContext, GenerationResult, CaseArtifacts
@@ -383,7 +384,7 @@ class OpenFOAMGPTAgent:
             end_time = round(flow_through * 10, 4)   # 10 flow-through times
             write_interval = round(flow_through / 10, 5)  # 100 スナップショット
 
-            if spec.case_type in ("external_snappy", "snappy_external"):
+            if spec.case_type in ("external_snappy", "snappy_external", "snappy_2d"):
                 # snappyHexMesh は表面付近に極細セルを作るため初期 dt を小さく
                 # adjustTimeStep が自動的に最適値に上げていく
                 delta_t = round(flow_through / 50000, 8)
@@ -609,10 +610,17 @@ class OpenFOAMGPTAgent:
             console.print("  blockMeshDict を修正しました")
 
     def _fix_solver_settings(self, error_msg: str, case_dir: str, context: EnrichedContext) -> None:
-        """ソルバーエラー時に system/ と 0/ をテンプレートから再生成する。
-        LLM によるシステムファイル書き換えは行わない（不正形式を生成しやすいため）。
+        """ソルバーエラー時の修正戦略:
+        1. ルールベース修正を試みる（高速・確実）
+        2. 修正できなかった場合のみテンプレート再生成にフォールバック
         """
         case_path = Path(case_dir)
+        # まずルールベース修正を試みる
+        rule_fixed = apply_rule_based_fixes(case_dir, error_msg)
+        if rule_fixed:
+            console.print("  [green]ルールベース修正を適用しました（テンプレート再生成をスキップ）[/green]")
+            return
+        # ルールで解決できなければテンプレートから再生成
         console.print("  [dim]テンプレートから system/ と 0/ を再生成します[/dim]")
         self._regenerate_system_dir(case_path, context)
         self._regenerate_zero_dir(case_path, context)
