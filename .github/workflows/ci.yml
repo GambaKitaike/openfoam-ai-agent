@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: pytest + Jinja2 構文チェック
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install jinja2 pydantic pydantic-settings rich typer pytest
+          # OpenAI / Anthropic はスタブで置き換えるため不要
+
+      - name: Jinja2 テンプレート構文チェック
+        run: |
+          python - <<'EOF'
+          from pathlib import Path
+          from jinja2 import Environment, FileSystemLoader, TemplateSyntaxError
+
+          templates_dir = Path("templates")
+          env = Environment(
+              loader=FileSystemLoader(str(templates_dir)),
+              trim_blocks=True,
+              lstrip_blocks=True,
+          )
+          errors = []
+          for tmpl_path in sorted(templates_dir.rglob("*.j2")):
+            rel = tmpl_path.relative_to(templates_dir)
+            try:
+                env.get_template(str(rel))
+                print(f"  OK  {rel}")
+            except TemplateSyntaxError as e:
+                errors.append(f"  NG  {rel}: {e}")
+                print(f"  NG  {rel}: {e}")
+
+          if errors:
+              raise SystemExit(f"\n{len(errors)} テンプレートに構文エラーがあります")
+          print(f"\n全テンプレートの構文チェック完了")
+          EOF
+
+      - name: pytest（LLM・OpenFOAM 不要テストのみ）
+        env:
+          # ダミーキーを設定（LLM クライアントの初期化を通過させるため）
+          OPENAI_API_KEY: sk-dummy-key-for-ci
+          LLM_PROVIDER: openai
+          LLM_MODEL: gpt-4o
+        run: |
+          pytest tests/ -v --tb=short
+
+      - name: テスト結果サマリー
+        if: always()
+        run: |
+          echo "## CI 結果" >> $GITHUB_STEP_SUMMARY
+          echo "- Python: $(python --version)" >> $GITHUB_STEP_SUMMARY
+          echo "- Jinja2: $(python -c 'import jinja2; print(jinja2.__version__)')" >> $GITHUB_STEP_SUMMARY
