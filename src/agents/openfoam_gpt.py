@@ -14,8 +14,11 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 from ..config import Settings
+from ..case_applier import CaseApplier, copy_zero_orig_if_needed
+from ..case_validator import CaseValidator
 from ..error_fixer import apply_rule_based_fixes
 from ..llm_client import LLMClient
+from ..mesh.cylinder_2d_ogrid import generate as generate_cylinder_2d_ogrid
 from ..models import (
     SimulationSpec, EnrichedContext, GenerationResult, CaseArtifacts
 )
@@ -43,6 +46,8 @@ class OpenFOAMGPTAgent:
         self.settings = settings
         self.llm = LLMClient(settings)
         self.runner = OpenFOAMRunner(settings)
+        self.applier = CaseApplier()
+        self.validator = CaseValidator()
         self.jinja = Environment(
             loader=FileSystemLoader(str(TEMPLATES_DIR)),
             trim_blocks=True,
@@ -74,25 +79,30 @@ class OpenFOAMGPTAgent:
         )
 
         # ── Step 2: blockMesh（自己修正ループ）────────────────────────
-        console.print(Rule("[bold cyan]blockMesh 実行[/bold cyan]"))
-        bm_result, bm_retries = self._run_with_self_correction(
-            case_dir=case_dir,
-            command="blockMesh",
-            run_fn=lambda: self.runner.run_block_mesh(case_dir),
-            fix_fn=lambda err, content: self._fix_blockmesh(err, case_dir, context),
-        )
-        artifacts.block_mesh_success = bm_result.success
-        artifacts.block_mesh_retries = bm_retries
-        artifacts.log_files["blockMesh"] = bm_result.log_file or ""
+        if context.reference_mesh_prebuilt:
+            console.print(Rule("[bold cyan]blockMesh 実行[/bold cyan]"))
+            console.print("  [dim]事前メッシュ使用 — blockMesh をスキップ[/dim]")
+            artifacts.block_mesh_success = True
+        else:
+            console.print(Rule("[bold cyan]blockMesh 実行[/bold cyan]"))
+            bm_result, bm_retries = self._run_with_self_correction(
+                case_dir=case_dir,
+                command="blockMesh",
+                run_fn=lambda: self.runner.run_block_mesh(case_dir),
+                fix_fn=lambda err, content: self._fix_blockmesh(err, case_dir, context),
+            )
+            artifacts.block_mesh_success = bm_result.success
+            artifacts.block_mesh_retries = bm_retries
+            artifacts.log_files["blockMesh"] = bm_result.log_file or ""
 
-        if not bm_result.success:
-            console.print(Panel(
-                f"[red]blockMesh が {MAX_RETRIES} 回試行後も失敗しました[/red]",
-                border_style="red",
-            ))
-            return artifacts
+            if not bm_result.success:
+                console.print(Panel(
+                    f"[red]blockMesh が {MAX_RETRIES} 回試行後も失敗しました[/red]",
+                    border_style="red",
+                ))
+                return artifacts
 
-        console.print("[bold green]  ✓ メッシュ生成完了[/bold green]")
+            console.print("[bold green]  ✓ メッシュ生成完了[/bold green]")
 
         # ── Step 3a: snappyHexMesh（STL指定時のみ）────────────────────
         if spec.case_type in ("snappy_external", "snappy_2d") and spec.stl_path:
@@ -124,8 +134,22 @@ class OpenFOAMGPTAgent:
         console.print("[green]  ✓ メッシュ品質確認完了[/green]" if cm.success else
                       "[yellow]  ⚠ checkMesh に警告あり（続行）[/yellow]")
 
+        # blockMesh 後の patch 整合性チェック
+        post_mesh_issues = self.validator.validate(
+            Path(case_dir), spec, after_blockmesh=True
+        )
+        post_errors = [i for i in post_mesh_issues if i.severity == "error"]
+        if post_errors:
+            for issue in post_errors[:3]:
+                console.print(f"[yellow]  ⚠ {issue.check}: {issue.message}[/yellow]")
+
         # ── Step 3b: potentialFoam 初期化（外部流れ非定常のみ）─────────
-        if not spec.steady_state and spec.case_type in ("snappy_2d", "snappy_external", "external_snappy"):
+        if not spec.steady_state and (
+            spec.case_type in (
+                "snappy_2d", "snappy_external", "external_snappy", "cylinder_2d_ogrid",
+            )
+            or context.reference_case_id
+        ):
             console.print("[cyan]  → potentialFoam で速度場を初期化中...[/cyan]")
             pot = self.runner.run_potential_foam(case_dir)
             if pot.returncode == 0:
@@ -137,6 +161,14 @@ class OpenFOAMGPTAgent:
         console.print(Rule("[bold cyan]ソルバー実行[/bold cyan]"))
         log_file = str(Path(case_dir) / f"log.{spec.solver}")
         monitor = SolverMonitor(log_file=log_file, convergence_threshold=convergence_threshold)
+
+        # reference case 使用時は solver を controlDict に合わせる
+        cd_path = Path(case_dir) / "system" / "controlDict"
+        if cd_path.exists() and context.reference_case_id:
+            import re as _re
+            m = _re.search(r"application\s+(\w+)\s*;", cd_path.read_text())
+            if m:
+                spec.solver = m.group(1)
 
         solver_result, solver_retries = self._run_with_self_correction(
             case_dir=case_dir,
@@ -193,15 +225,45 @@ class OpenFOAMGPTAgent:
         (case_path / "constant").mkdir(exist_ok=True)
         (case_path / "system").mkdir(exist_ok=True)
 
-        files_created = []
+        files_created: list[str] = []
+
+        # ── 主経路: 参照ケースを丸ごと適用 ──────────────────────────
+        if context.reference_files and context.reference_case_id:
+            files_created = self.applier.apply(context, case_path)
+            copy_zero_orig_if_needed(case_path)
+
+            # 事前メッシュケースは blockMeshDict を生成しない
+            if not context.reference_mesh_prebuilt and (
+                spec.case_type == "cylinder_2d_ogrid"
+                or not (case_path / "system" / "blockMeshDict").exists()
+            ):
+                bmd = self._render_blockmesh_template(context)
+                (case_path / "system" / "blockMeshDict").write_text(bmd)
+                if "system/blockMeshDict" not in files_created:
+                    files_created.append("system/blockMeshDict")
+
+            pre_issues = self.validator.validate(case_path, spec)
+            for issue in pre_issues:
+                if issue.severity == "error":
+                    console.print(f"[yellow]  ⚠ 検証: {issue.check}: {issue.message}[/yellow]")
+
+            if spec.case_type in ("snappy_external", "snappy_2d") and spec.stl_path:
+                self._setup_snappy_files(case_path, context, files_created)
+
+            return GenerationResult(
+                output_path=str(case_path),
+                case_type=spec.case_type,
+                files_created=files_created,
+            )
+
+        # ── フォールバック: Jinja テンプレート ──────────────────────
+        console.print("  [dim]参照ケースなし — Jinja テンプレートで生成[/dim]")
         jinja_context = self._build_jinja_context(context)
 
-        # blockMeshDict: テンプレートから生成（LLM 全文生成を廃止）
         bmd_content = self._render_blockmesh_template(context)
         (case_path / "system" / "blockMeshDict").write_text(bmd_content)
         files_created.append("system/blockMeshDict")
 
-        # その他ファイル: テンプレートから生成（RAG取得ファイルがあればそちらを優先）
         template_map = {
             "system/controlDict": "system/controlDict.j2",
             "system/fvSchemes": "system/fvSchemes.j2",
@@ -222,20 +284,6 @@ class OpenFOAMGPTAgent:
             except Exception:
                 pass
 
-        # RAGで取得したチュートリアルの fvSchemes / fvSolution を直接上書き
-        # LLMによる書き換えなしでチュートリアルの実績ある設定をそのまま使う
-        if context.reference_fvschemes:
-            (case_path / "system" / "fvSchemes").write_text(context.reference_fvschemes)
-            console.print("  [green]RAGチュートリアルの fvSchemes を適用しました[/green]")
-        if context.reference_fvsolution and spec.steady_state:
-            # 非定常の場合: RAG が SIMPLE ブロックを返すことが多く PIMPLE ブロックが消えるため
-            # テンプレート生成済みの fvSolution をそのまま使う
-            (case_path / "system" / "fvSolution").write_text(context.reference_fvsolution)
-            console.print("  [green]RAGチュートリアルの fvSolution を適用しました[/green]")
-        elif not spec.steady_state:
-            console.print("  [dim]非定常: fvSolution はテンプレートから生成（PIMPLE ブロック保持）[/dim]")
-
-        # snappyHexMesh 用追加ファイルを生成
         if spec.case_type in ("snappy_external", "snappy_2d") and spec.stl_path:
             self._setup_snappy_files(case_path, context, files_created)
 
@@ -258,6 +306,25 @@ class OpenFOAMGPTAgent:
         }
         template_name = _TMPL_COMPAT.get(raw_name, raw_name)
         params = context.mesh_params_suggestion or {}
+
+        # O-グリッド円柱 2D: Python ジェネレータで直接生成 (Jinja2 不使用)
+        if template_name == "ogrid_cylinder_2d":
+            spec = context.spec
+            r = (spec.characteristic_length or 0.1) / 2.0
+            lchar = r * 2  # = characteristic_length
+            return generate_cylinder_2d_ogrid(
+                cx=0.0, cy=0.0, r=r,
+                ring_factor=2.0,
+                x_in=round(-lchar * 8,  4),   # 上流 8D
+                x_out=round(lchar * 20, 4),    # 下流 20D
+                y_min=round(-lchar * 10, 4),   # ±10D (ブロッケージ 5%)
+                y_max=round(lchar * 10,  4),
+                z_min=0.0, z_max=0.01,
+                n_r=15, n_t=20, n_up=40, n_down=80, n_lat=30,
+                # gr_r=0.05 (極細セル ~0.5mm) は dt=4ms で Co=7 → 爆発
+                # gr_r=0.5  (最小セル ~2.3mm) は dt=3ms で Co=0.4 → 安定
+                gr_r=0.5, gr_up=0.1, gr_down=10.0, gr_lat=0.1,
+            )
 
         # テンプレートに応じたデフォルトパラメータ
         if template_name == "box_channel_2d":
@@ -304,20 +371,20 @@ class OpenFOAMGPTAgent:
             }
         elif template_name == "box_snappy_2d":
             # 2D snappyHexMesh 用: z 方向は固定 0〜0.01m, front/back = empty
+            # ブロッケージ比 < 5% を確保するため Y 幅は ±10D 以上にする
             stl_bbox = params.get("stl_bbox", {})
             cx = stl_bbox.get("cx", 0.0)
             cy = stl_bbox.get("cy", 0.0)
             lchar = stl_bbox.get("lchar", context.spec.characteristic_length or 0.1)
-            scale = params.get("domain_scale", 20.0)
-            half_y = lchar * scale / 2.0
             defaults = {
                 "stl_name": params.get("stl_name", "geometry.stl"),
-                "x_min": round(cx - lchar * 5, 4),   # 上流 5D
-                "x_max": round(cx + lchar * 20, 4),  # 下流 20D（渦の発達に十分な距離）
-                "y_min": round(cy - half_y * 0.5, 4),
-                "y_max": round(cy + half_y * 0.5, 4),
-                "nx": params.get("nx", 80),
-                "ny": params.get("ny", 40),
+                "x_min": round(cx - lchar * 8,  4),   # 上流 8D
+                "x_max": round(cx + lchar * 20, 4),   # 下流 20D（渦列の発達に十分）
+                "y_min": round(cy - lchar * 10, 4),   # ±10D → ブロッケージ = D/20D = 5%
+                "y_max": round(cy + lchar * 10, 4),
+                # RAG 提案値は粗すぎるため固定値を使う
+                "nx": 120,
+                "ny": 70,
             }
         elif template_name == "box_snappy":
             # snappyHexMesh 用背景メッシュ: STLのバウンディングボックスから自動計算
@@ -369,11 +436,12 @@ class OpenFOAMGPTAgent:
         spec = context.spec
         has_wall = spec.case_type in (
             "channel_2d", "channel_3d", "external_snappy", "snappy_external",
-            "snappy_2d", "heat_transfer", "internal_flow",
+            "snappy_2d", "heat_transfer", "internal_flow", "cylinder_2d_ogrid",
         )
         # snappyHexMesh が STL 名からパッチを自動生成するため、ステム名を渡す
         snappy_object_name = Path(spec.stl_path).stem if spec.stl_path else "object"
         is_snappy_2d = (spec.case_type == "snappy_2d")
+        is_ogrid_2d = (spec.case_type == "cylinder_2d_ogrid")
 
         if spec.steady_state:
             end_time, delta_t, write_interval = 1000, 1, 100
@@ -384,7 +452,18 @@ class OpenFOAMGPTAgent:
             end_time = round(flow_through * 10, 4)   # 10 flow-through times
             write_interval = round(flow_through / 10, 5)  # 100 スナップショット
 
-            if spec.case_type in ("external_snappy", "snappy_external", "snappy_2d"):
+            if spec.case_type == "cylinder_2d_ogrid":
+                # pimpleFoam + 固定 dt (timeStep writeControl)
+                # 最小セルサイズ: 接線方向 ≈ π*r/n_t_total = π*0.5*lchar/(8*20) ≈ 0.0098*lchar
+                # 径方向 (gr_r=0.5, n_r=15): ≈ 0.007*lchar
+                # → 最小セル ≈ 0.007*lchar, Co=0.1, U_max=2*U_inf
+                min_cell_approx = char_len * 0.007
+                delta_t = round(min_cell_approx * 0.1 / max(spec.inlet_velocity * 2, 0.01), 6)
+            elif (spec.solver == "icoFoam" and spec.case_type == "snappy_2d"):
+                # icoFoam は adjustTimeStep を使わないため、固定 dt を安全側に設定
+                min_cell_approx = char_len * 0.023
+                delta_t = round(min_cell_approx * 0.3 / max(spec.inlet_velocity * 3, 0.01), 6)
+            elif spec.case_type in ("external_snappy", "snappy_external", "snappy_2d"):
                 # snappyHexMesh は表面付近に極細セルを作るため初期 dt を小さく
                 # adjustTimeStep が自動的に最適値に上げていく
                 delta_t = round(flow_through / 50000, 8)
@@ -402,6 +481,7 @@ class OpenFOAMGPTAgent:
             "has_wall": has_wall,
             "snappy_object_name": snappy_object_name,
             "is_snappy_2d": is_snappy_2d,
+            "is_ogrid_2d": is_ogrid_2d,
             "end_time": end_time,
             "delta_t": delta_t,
             "write_interval": write_interval,
@@ -466,9 +546,10 @@ class OpenFOAMGPTAgent:
 
         # snappyHexMeshDict
         stl_solid_name = stl_name.rsplit(".", 1)[0]
-        # locationInMesh は STL 中心からズレた位置（流体領域内）
-        loc_x = round(params["stl_bbox"]["cx"] + lchar * 2.5, 4)
-        loc_y = round(params["stl_bbox"]["cy"] + lchar * 0.3, 4)
+        # locationInMesh: 円柱から上流側にズラした流体領域内の点
+        # 上流 4D の位置（円柱中心から十分離れており、STL の外側）
+        loc_x = round(params["stl_bbox"]["cx"] - lchar * 4.0, 4)
+        loc_y = round(params["stl_bbox"]["cy"] + lchar * 0.1, 4)
         if spec.case_type == "snappy_2d":
             # 2D: ドメインは z=[0, 0.01] 固定なので中心 0.005 を使う
             loc_z = 0.005
@@ -477,9 +558,10 @@ class OpenFOAMGPTAgent:
         snappy_ctx = {
             "stl_name": stl_name,
             "stl_solid_name": stl_solid_name,
-            "feature_level": 2,
-            "surface_min_level": 3,
-            "surface_max_level": 5,
+            # 2D ケース: level 5 は z 方向の極薄セルを生成して発散の原因になるため抑制
+            "feature_level": 2 if spec.case_type != "snappy_2d" else 1,
+            "surface_min_level": 3 if spec.case_type != "snappy_2d" else 2,
+            "surface_max_level": 5 if spec.case_type != "snappy_2d" else 3,
             "location_x": loc_x,
             "location_y": loc_y,
             "location_z": loc_z,
@@ -626,37 +708,32 @@ class OpenFOAMGPTAgent:
         self._regenerate_zero_dir(case_path, context)
 
     def _regenerate_system_dir(self, case_path: Path, context: EnrichedContext) -> None:
-        """system/ ディレクトリを Jinja2 テンプレートから再生成する（blockMeshDict は除く）。
-        RAGで取得したファイルがあればテンプレートより優先して使う。
-        """
+        """system/ を再生成。参照ケースがあれば再適用、なければ Jinja。"""
+        if context.reference_files:
+            self.applier.apply(context, case_path)
+            return
         jinja_context = self._build_jinja_context(context)
         for fname in ["fvSchemes", "fvSolution", "controlDict"]:
             try:
-                # RAG参照ファイルを優先（ただし fvSolution は非定常時はテンプレートを使う）
-                rag_content = None
-                if fname == "fvSchemes" and context.reference_fvschemes:
-                    rag_content = context.reference_fvschemes
-                elif fname == "fvSolution" and context.reference_fvsolution and context.spec.steady_state:
-                    rag_content = context.reference_fvsolution
-
-                if rag_content:
-                    (case_path / "system" / fname).write_text(rag_content)
-                    console.print(f"  [dim]system/{fname} をRAGチュートリアルから再生成しました[/dim]")
-                else:
-                    content = self.jinja.get_template(f"system/{fname}.j2").render(**jinja_context)
-                    (case_path / "system" / fname).write_text(content)
-                    console.print(f"  [dim]system/{fname} をテンプレートから再生成しました[/dim]")
+                content = self.jinja.get_template(f"system/{fname}.j2").render(**jinja_context)
+                (case_path / "system" / fname).write_text(content)
+                console.print(f"  [dim]system/{fname} をテンプレートから再生成しました[/dim]")
             except Exception:
                 pass
 
     def _regenerate_zero_dir(self, case_path: Path, context: EnrichedContext) -> None:
-        """境界条件エラー時に 0/ ディレクトリをテンプレートから再生成する。"""
+        """0/ を再生成。参照ケースがあれば再適用、なければ Jinja。"""
+        if context.reference_files:
+            for rel, content in context.reference_files.items():
+                if rel.startswith("0/"):
+                    (case_path / rel).write_text(content)
+            self.applier._substitute_parameters(case_path, context.spec, [])
+            return
         jinja_context = self._build_jinja_context(context)
         for fname in ["U", "p", "k", "omega", "nut"]:
             try:
                 content = self.jinja.get_template(f"0/{fname}.j2").render(**jinja_context)
-                target = case_path / "0" / fname
-                target.write_text(content)
+                (case_path / "0" / fname).write_text(content)
                 console.print(f"  [dim]0/{fname} をテンプレートから再生成しました[/dim]")
             except Exception:
                 pass

@@ -1,7 +1,6 @@
 """
 Agent② Prompt Generation Agent (RAG)
-ChromaDB からチュートリアル・ドキュメントを検索して
-EnrichedContext（RAG 拡張コンテキスト）を生成する
+ChromaDB から参照チュートリアルケースを選定し EnrichedContext を生成する
 """
 from __future__ import annotations
 
@@ -18,7 +17,7 @@ console = Console()
 
 
 class PromptGenerationAgent:
-    """Agent②: SimulationSpec + RAG → EnrichedContext 生成エージェント。"""
+    """Agent②: SimulationSpec + ケース単位 RAG → EnrichedContext 生成エージェント。"""
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -28,20 +27,25 @@ class PromptGenerationAgent:
             openai_api_key=settings.openai_api_key,
         )
 
-    def run(self, spec: SimulationSpec) -> EnrichedContext:
+    def run(
+        self,
+        spec: SimulationSpec,
+        exclude_case_ids: list[str] | None = None,
+    ) -> EnrichedContext:
         """
-        SimulationSpec に基づいて RAG 検索を実行し EnrichedContext を返す。
+        SimulationSpec に基づいて参照ケースを選定し EnrichedContext を返す。
 
         Args:
             spec: Agent① が生成した解析仕様
+            exclude_case_ids: 再選定時に除外する case_id リスト
 
         Returns:
             EnrichedContext
         """
         if self.retriever.is_available:
             count = self.retriever.collection.count()
-            console.print(f"  RAGインデックス: [green]{count:,} チャンク[/green] から検索中...")
-            context = self.retriever.retrieve(spec)
+            console.print(f"  RAGケースカタログ: [green]{count:,} ケース[/green] から検索中...")
+            context = self.retriever.retrieve(spec, exclude_case_ids=exclude_case_ids)
             self._print_rag_summary(context)
         else:
             console.print("  [yellow]RAGインデックス未構築 - テンプレートベースで続行[/yellow]")
@@ -52,21 +56,31 @@ class PromptGenerationAgent:
 
     def _print_rag_summary(self, context: EnrichedContext):
         """RAG 検索結果のサマリーを表示する。"""
-        if not context.rag_available or not context.rag_sources:
+        if not context.rag_available:
             return
 
-        sources_display = []
-        seen = set()
-        for src in context.rag_sources[:5]:
-            # ソースパスを短く表示
-            short = Path(src).name if "/" in src or "\\" in src else src
-            if short not in seen:
-                sources_display.append(short)
-                seen.add(short)
-
-        console.print(Panel(
-            f"メッシュテンプレート: [bold]{context.mesh_template_name}[/bold]\n"
-            f"参照ソース: {', '.join(sources_display)}",
-            title="[bold green]RAG 検索結果[/bold green]",
-            border_style="green",
-        ))
+        if context.reference_case_id:
+            n_files = len(context.reference_files)
+            title = context.reference_title_ja or context.reference_case_id
+            summary = context.reference_summary_ja
+            body = f"[bold]{title}[/bold]\n"
+            if summary:
+                body += f"{summary}\n\n"
+            body += (
+                f"ケースID: {context.reference_case_id}\n"
+                f"ファイル数: {n_files}\n"
+                f"パス: {context.reference_case_path}"
+            )
+            if context.reference_phenomenon:
+                body += f"\n現象タグ: {context.reference_phenomenon}"
+            console.print(Panel(
+                body,
+                title="[bold green]ケース単位 RAG[/bold green]",
+                border_style="green",
+            ))
+        elif context.mesh_template_name:
+            console.print(Panel(
+                f"フォールバック: [bold]{context.mesh_template_name}[/bold]",
+                title="[yellow]参照ケース未選択[/yellow]",
+                border_style="yellow",
+            ))

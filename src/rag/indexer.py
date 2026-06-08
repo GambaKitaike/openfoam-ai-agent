@@ -1,57 +1,33 @@
 """
-RAG インデクサー
-OpenFOAMチュートリアル（ローカル）と公式Webドキュメントを
-ChromaDB ベクトルストアにインデックス化する
+RAG インデクサー — ケース単位
+
+OpenFOAM チュートリアルを 1 ケース = 1 ドキュメントとして ChromaDB に保存する。
 """
 from __future__ import annotations
 
 import hashlib
-import re
-from pathlib import Path
-from typing import Generator
 
 import chromadb
 from openai import OpenAI
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
+from .case_catalog import TUTORIALS_ROOT, CaseRecord, discover_cases
+from .case_intent_enricher import CaseIntentEnricher, enrich_all_intents
+
 console = Console()
 
-# インデックス対象のローカルチュートリアルパス
-TUTORIALS_ROOT = Path("/usr/lib/openfoam/openfoam2512/tutorials")
-
-# Webスクレイピング対象URL
-WEB_SOURCES = [
-    "https://www.openfoam.com/documentation/guides/latest/doc/guide-applications-solvers-incompressible.html",
-    "https://www.openfoam.com/documentation/guides/latest/doc/guide-turbulence.html",
-    "https://www.openfoam.com/documentation/guides/latest/doc/guide-bcs.html",
-    "https://www.openfoam.com/documentation/guides/latest/doc/guide-fvschemes.html",
-    "https://www.openfoam.com/documentation/guides/latest/doc/guide-fvsolution.html",
-    "https://www.openfoam.com/documentation/guides/latest/doc/guide-meshing-blockmesh.html",
-]
-
-# インデックス対象とするファイル名パターン
-TARGET_FILENAMES = {
-    "blockMeshDict", "controlDict", "fvSchemes", "fvSolution",
-    "turbulenceProperties", "transportProperties",
-    "U", "p", "k", "omega", "epsilon", "nut", "nuTilda",
-    "decomposeParDict", "snappyHexMeshDict",
-}
-
-# チャンクサイズ（文字数）
-CHUNK_SIZE = 1500
-CHUNK_OVERLAP = 200
-
-# ChromaDB コレクション名
-COLLECTION_NAME = "openfoam_knowledge"
+COLLECTION_NAME = "openfoam_cases"
 
 
 class OpenFOAMIndexer:
-    """OpenFOAMのチュートリアルとWebドキュメントをインデックス化するクラス。"""
+    """OpenFOAM チュートリアルケースをケース単位でインデックス化する。"""
 
     def __init__(self, db_path: str, openai_api_key: str):
+        from pathlib import Path
         self.db_path = Path(db_path)
         self.db_path.mkdir(parents=True, exist_ok=True)
+        self.openai_api_key = openai_api_key
         self.client = chromadb.PersistentClient(path=str(self.db_path))
         self.openai = OpenAI(api_key=openai_api_key)
         self.collection = self.client.get_or_create_collection(
@@ -59,210 +35,121 @@ class OpenFOAMIndexer:
             metadata={"hnsw:space": "cosine"},
         )
 
-    def build(self, include_web: bool = True) -> dict:
+    def build(
+        self,
+        include_web: bool = False,
+        skip_enrich: bool = False,
+        enrich_only: bool = False,
+        force_enrich: bool = False,
+        intent_cache_dir: str | None = None,
+    ) -> dict:
         """
-        インデックスを構築する。
+        ケースカタログを構築する。
 
         Args:
-            include_web: True の場合 Web ドキュメントもスクレイピングしてインデックス化
-
-        Returns:
-            dict: インデックス化の統計情報
+            include_web: 互換のため残すが、ケース単位インデックスでは未使用
+            skip_enrich: LLM 意図メタデータ生成をスキップ
+            enrich_only: インデックス化せず enrich のみ実行
+            force_enrich: キャッシュを無視して LLM 再生成
+            intent_cache_dir: case_intents キャッシュディレクトリ
         """
-        stats = {"local_docs": 0, "web_docs": 0, "total_chunks": 0, "skipped": 0}
+        stats = {"cases": 0, "skipped": 0, "total": 0, "enriched": 0, "cached": 0, "intent_failed": 0}
 
-        console.print("[bold cyan]RAG インデックスを構築中...[/bold cyan]")
+        console.print("[bold cyan]ケース単位 RAG インデックスを構築中...[/bold cyan]")
+        if not TUTORIALS_ROOT.exists():
+            console.print(f"[yellow]  チュートリアルが見つかりません: {TUTORIALS_ROOT}[/yellow]")
+            return stats
 
-        # ── ローカルチュートリアル ──────────────────────────────────────
-        console.print("\n[bold]1/2 ローカルチュートリアルをインデックス化[/bold]")
-        local_docs = list(self._iter_tutorial_documents())
-        stats["local_docs"] = len(local_docs)
+        cases = discover_cases()
+        stats["total"] = len(cases)
+        console.print(f"  発見ケース数: {len(cases)}")
+
+        if intent_cache_dir is None:
+            intent_cache_dir = str(self.db_path.parent / "case_intents")
+
+        if not skip_enrich:
+            console.print("[bold cyan]意図メタデータを生成中 (LLM)...[/bold cyan]")
+            enrich_stats = enrich_all_intents(
+                cases,
+                cache_dir=intent_cache_dir,
+                openai_api_key=self.openai_api_key,
+                skip=False,
+                force=force_enrich,
+            )
+            stats["enriched"] = enrich_stats.get("enriched", 0)
+            stats["cached"] = enrich_stats.get("cached", 0)
+            stats["intent_failed"] = enrich_stats.get("failed", 0)
+            console.print(
+                f"  intent: 新規 {stats['enriched']}, キャッシュ {stats['cached']}, "
+                f"失敗 {stats['intent_failed']}"
+            )
+        else:
+            enricher = CaseIntentEnricher(
+                cache_dir=intent_cache_dir,
+                openai_api_key=self.openai_api_key,
+            )
+            loaded = 0
+            for record in cases:
+                cache_path = enricher._cache_path(record.case_id)
+                if cache_path.exists():
+                    from .case_intent import CaseIntent
+                    import json
+                    intent = CaseIntent.from_dict(json.loads(cache_path.read_text(encoding="utf-8")))
+                    enricher._merge_mechanical(intent, record)
+                    record.intent = intent
+                    record.embedding_text = record.build_embedding_text()
+                    loaded += 1
+            stats["cached"] = loaded
+            if loaded:
+                console.print(f"  [dim]キャッシュから intent 読込: {loaded} 件[/dim]")
+
+        if enrich_only:
+            console.print("[bold green]✓ enrich-only 完了[/bold green]")
+            return stats
 
         with Progress(
             SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
             BarColumn(), TaskProgressColumn(), console=console,
         ) as progress:
-            task = progress.add_task("ローカル文書を処理中...", total=len(local_docs))
-            for doc in local_docs:
-                added = self._upsert_document(doc)
-                if added:
-                    stats["total_chunks"] += 1
+            task = progress.add_task("ケースをインデックス化...", total=len(cases))
+            for record in cases:
+                if self._upsert_case(record):
+                    stats["cases"] += 1
                 else:
                     stats["skipped"] += 1
                 progress.advance(task)
 
-        console.print(f"  → {stats['local_docs']} ファイル, {stats['total_chunks']} チャンク")
-
-        # ── Web ドキュメント ───────────────────────────────────────────
-        if include_web:
-            console.print("\n[bold]2/2 Web ドキュメントをスクレイピング[/bold]")
-            web_docs = list(self._iter_web_documents())
-            stats["web_docs"] = len(web_docs)
-            web_chunks = 0
-            for doc in web_docs:
-                added = self._upsert_document(doc)
-                if added:
-                    web_chunks += 1
-            stats["total_chunks"] += web_chunks
-            console.print(f"  → {stats['web_docs']} ページ, {web_chunks} チャンク")
-
-        console.print(f"\n[bold green]✓ インデックス構築完了: 合計 {stats['total_chunks']} チャンク[/bold green]")
+        console.print(
+            f"\n[bold green]✓ 完了: {stats['cases']} ケース "
+            f"(スキップ {stats['skipped']})[/bold green]"
+        )
         return stats
 
     def get_collection_count(self) -> int:
-        """現在のコレクション内のドキュメント数を返す。"""
         return self.collection.count()
 
-    # ──────────────────────────────────────────────────────────────────
-    # ローカルチュートリアル読み込み
-    # ──────────────────────────────────────────────────────────────────
+    def _upsert_case(self, record: CaseRecord) -> bool:
+        case_hash = hashlib.md5(record.case_id.encode()).hexdigest()[:12]
+        doc_id = f"case_{case_hash}"
 
-    def _iter_tutorial_documents(self) -> Generator[dict, None, None]:
-        """チュートリアルディレクトリから対象ファイルを読み込む。"""
-        if not TUTORIALS_ROOT.exists():
-            console.print(f"[yellow]  チュートリアルディレクトリが見つかりません: {TUTORIALS_ROOT}[/yellow]")
-            return
-
-        for file_path in TUTORIALS_ROOT.rglob("*"):
-            if not file_path.is_file():
-                continue
-            if file_path.name not in TARGET_FILENAMES:
-                continue
-            try:
-                content = file_path.read_text(errors="ignore")
-                if len(content.strip()) < 50:
-                    continue
-                # チュートリアルのカテゴリ（incompressible/simpleFoam/pitzDailyなど）
-                rel = file_path.relative_to(TUTORIALS_ROOT)
-                parts = rel.parts
-                category = parts[0] if len(parts) > 1 else "unknown"
-                solver_hint = parts[1] if len(parts) > 2 else ""
-
-                yield {
-                    "content": content,
-                    "source": str(file_path),
-                    "filename": file_path.name,
-                    "category": category,
-                    "solver": solver_hint,
-                    "doc_type": "tutorial",
-                }
-            except Exception:
-                continue
-
-    # ──────────────────────────────────────────────────────────────────
-    # Web スクレイピング
-    # ──────────────────────────────────────────────────────────────────
-
-    def _iter_web_documents(self) -> Generator[dict, None, None]:
-        """Web ドキュメントをスクレイピングして読み込む。"""
+        text = record.embedding_text or record.build_embedding_text()
         try:
-            import requests
-            from bs4 import BeautifulSoup
-        except ImportError:
-            console.print("[yellow]  requests / beautifulsoup4 が未インストール。Webスクレイピングをスキップ。[/yellow]")
-            return
-
-        for url in WEB_SOURCES:
-            try:
-                console.print(f"  → {url}")
-                resp = requests.get(url, timeout=15)
-                if resp.status_code != 200:
-                    continue
-                soup = BeautifulSoup(resp.text, "html.parser")
-                # メインコンテンツを抽出（ナビゲーションなどを除く）
-                main = soup.find("main") or soup.find("article") or soup.find("body")
-                if main is None:
-                    continue
-                text = main.get_text(separator="\n", strip=True)
-                # 短すぎる・長すぎるものをスキップ
-                if len(text) < 200:
-                    continue
-                yield {
-                    "content": text[:50000],   # 50KB上限
-                    "source": url,
-                    "filename": url.split("/")[-1],
-                    "category": "documentation",
-                    "solver": "",
-                    "doc_type": "web",
-                }
-            except Exception as e:
-                console.print(f"  [yellow]  スキップ: {url} ({e})[/yellow]")
-                continue
-
-    # ──────────────────────────────────────────────────────────────────
-    # ChromaDB へのアップサート
-    # ──────────────────────────────────────────────────────────────────
-
-    def _upsert_document(self, doc: dict) -> bool:
-        """
-        ドキュメントをチャンク分割してベクトル化し ChromaDB に保存する。
-        既存のドキュメント（同一ソース）はスキップする。
-        Returns True if new chunks were added.
-        """
-        content = doc["content"]
-        source = doc["source"]
-
-        # 既存チェック（ソースURLのハッシュで識別）
-        source_hash = hashlib.md5(source.encode()).hexdigest()[:8]
-        existing = self.collection.get(where={"source_hash": source_hash})
-        if existing["ids"]:
-            return False
-
-        chunks = self._split_text(content)
-        if not chunks:
-            return False
-
-        # バッチでエンベディング
-        try:
-            embeddings = self._embed_batch(chunks)
+            embedding = self._embed(text)
         except Exception as e:
-            console.print(f"  [yellow]エンベディング失敗: {source} - {e}[/yellow]")
+            console.print(f"  [yellow]エンベディング失敗: {record.case_id} - {e}[/yellow]")
             return False
-
-        ids = [f"{source_hash}_{i}" for i in range(len(chunks))]
-        metadatas = [
-            {
-                "source": source,
-                "source_hash": source_hash,
-                "filename": doc["filename"],
-                "category": doc["category"],
-                "solver": doc["solver"],
-                "doc_type": doc["doc_type"],
-                "chunk_index": i,
-            }
-            for i in range(len(chunks))
-        ]
 
         self.collection.upsert(
-            ids=ids,
-            embeddings=embeddings,
-            documents=chunks,
-            metadatas=metadatas,
+            ids=[doc_id],
+            embeddings=[embedding],
+            documents=[text],
+            metadatas=[record.to_metadata()],
         )
         return True
 
-    def _split_text(self, text: str) -> list[str]:
-        """テキストをオーバーラップ付きでチャンク分割する。"""
-        chunks = []
-        start = 0
-        while start < len(text):
-            end = start + CHUNK_SIZE
-            chunk = text[start:end]
-            if len(chunk.strip()) > 50:
-                chunks.append(chunk)
-            start += CHUNK_SIZE - CHUNK_OVERLAP
-        return chunks
-
-    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """OpenAI API でテキストをベクトル化する。"""
-        # OpenAI API は一度に最大 2048 テキスト
-        all_embeddings = []
-        batch_size = 100
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            response = self.openai.embeddings.create(
-                model="text-embedding-3-small",
-                input=batch,
-            )
-            all_embeddings.extend([r.embedding for r in response.data])
-        return all_embeddings
+    def _embed(self, text: str) -> list[float]:
+        response = self.openai.embeddings.create(
+            model="text-embedding-3-small",
+            input=text[:8000],
+        )
+        return response.data[0].embedding

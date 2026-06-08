@@ -16,6 +16,7 @@ FoamFile
 {% set is_2d = (case_type == "channel_2d") %}
 {% set is_snappy = case_type in ["external_snappy", "snappy_external"] %}
 {% set is_snappy_2d = (case_type == "snappy_2d") %}
+{% set is_ogrid_2d = (case_type == "cylinder_2d_ogrid") %}
 
 dimensions      [0 2 -2 0 0 0 0];
 
@@ -26,7 +27,13 @@ boundaryField
     inlet  { type zeroGradient; }
     outlet { type fixedValue; value uniform 0; }
 
-{% if is_snappy_2d %}
+{% if is_ogrid_2d %}
+    top    { type symmetryPlane; }
+    bottom { type symmetryPlane; }
+    frontAndBack { type empty; }
+    cylinder { type zeroGradient; }
+
+{% elif is_snappy_2d %}
     top    { type symmetryPlane; }
     bottom { type symmetryPlane; }
     front  { type empty; }

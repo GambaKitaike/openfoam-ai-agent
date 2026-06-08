@@ -13,11 +13,36 @@ FoamFile
     object      fvSolution;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
-{% set has_wall = case_type in ["channel_2d", "channel_3d", "external_snappy", "snappy_external", "snappy_2d", "heat_transfer"] %}
+{% set has_wall = case_type in ["channel_2d", "channel_3d", "external_snappy", "snappy_external", "snappy_2d", "heat_transfer", "cylinder_2d_ogrid"] %}
 {% set is_snappy = case_type in ["external_snappy", "snappy_external", "snappy_2d"] %}
+{% set is_ogrid_2d = (case_type == "cylinder_2d_ogrid") %}
 
 solvers
 {
+{% if is_ogrid_2d %}
+    // O-グリッド: GAMG はグレーディング比が大きいと発散するため PCG+DIC を使用
+    Phi
+    {
+        solver          PCG;
+        preconditioner  DIC;
+        tolerance       1e-7;
+        relTol          0.01;
+    }
+    p
+    {
+        solver          PCG;
+        preconditioner  DIC;
+        tolerance       1e-7;
+        relTol          0.05;
+    }
+    pFinal
+    {
+        solver          PCG;
+        preconditioner  DIC;
+        tolerance       1e-7;
+        relTol          0;
+    }
+{% else %}
     p
     {
         solver          GAMG;
@@ -35,6 +60,7 @@ solvers
         tolerance       1e-6;
         relTol          0;
     }
+{% endif %}
 {% endif %}
 
     "(U|k|omega|epsilon|nuTilda)"
@@ -103,11 +129,31 @@ relaxationFactors
 }
 
 {% else %}
+{% if is_ogrid_2d %}
+// O-グリッド 2D 円柱: pimpleFoam を使用 (icoFoam の phi 更新問題を回避)
+potentialFlow
+{
+    nNonOrthogonalCorrectors 10;
+}
+
+PIMPLE
+{
+    nOuterCorrectors    1;
+    nCorrectors         4;
+    nNonOrthogonalCorrectors 2;
+}
+{% elif solver == "icoFoam" %}
+PISO
+{
+    nCorrectors         4;
+    nNonOrthogonalCorrectors 3;
+}
+{% else %}
 PIMPLE
 {
 {% if is_snappy %}
     // snappyHexMesh（極細セルあり）: 多めのCorrectorで安定化
-    nOuterCorrectors    5;
+    nOuterCorrectors    3;
     nCorrectors         3;
     nNonOrthogonalCorrectors 2;
 {% else %}
@@ -122,6 +168,7 @@ PIMPLE
     pRefValue           0;
 {% endif %}
 }
+{% endif %}
 
 relaxationFactors
 {

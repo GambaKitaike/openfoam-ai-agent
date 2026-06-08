@@ -15,6 +15,7 @@ from rich.table import Table
 from ..config import Settings
 from ..llm_client import LLMClient
 from ..models import SimulationSpec
+from .spec_clarification import clarify_spec
 
 console = Console()
 
@@ -26,11 +27,26 @@ PREPROCESSING_SYSTEM_PROMPT = """あなたはOpenFOAMの前処理専門エキス
 - 明示されていないパラメータはOpenFOAM標準的なデフォルト値を設定し、defaults_applied に記録する
 - solver は解析タイプと定常/非定常に基づいて最適なものを選択する
 - mesh_template は case_type と dimensions から決定する
+- phenomenon はユーザーが言及した物理現象を正規化タグで返す
+
+【phenomenon タグ — 必ず以下のいずれか1つ】
+- "karman_vortex_shedding": カルマン渦、円柱周り非定常、渦の放出
+- "airfoil_steady": 翼、翼型、揚力、定常翼解析
+- "channel_internal": チャンネル、パイプ、ダクト、内部流れ
+- "backward_facing_step": 後方ステップ、再付着、バックステップ
+- "cavity_flow": キャビティ、駆動流、リド駆動キャビティ
+- "external_building": 建物周り、風環境、都市風
+- "meshing_demo": メッシュ生成デモのみ（通常は選ばない）
+- "general": 上記に当てはまらない
+
+【observables — ユーザーが観察したい量】
+- "velocity_U", "pressure_p", "lift_drag", "vorticity", "streamlines" 等
 
 【ソルバー選択ルール】
 - 定常流れ（"定常","steady","static"等）              → simpleFoam, steady_state: true
 - 非定常・過渡流れ（"非定常","transient","unsteady",
   "時間変化","カルマン渦","渦の放出","振動","脈動"等） → pimpleFoam, steady_state: false
+  ただし "層流","laminar" かつ Re < 2000 の場合      → icoFoam, steady_state: false （最も安定）
 - 圧縮性流れ（マッハ数 > 0.3 or "圧縮性"）           → rhoCentralFoam, steady_state: false
 - solver が明示されていない場合: Re < 500 かつ定常 → simpleFoam、それ以外で物体周り → pimpleFoam
 
@@ -47,9 +63,11 @@ PREPROCESSING_SYSTEM_PROMPT = """あなたはOpenFOAMの前処理専門エキス
                       noSlip壁が存在 → SIMPLEC収束安定。最もよく使う検証ケース
 - "channel_3d"      : 3Dダクト・管路・内部流れ、壁あり3D解析
                       noSlip壁が存在 → SIMPLEC収束安定
-- "snappy_2d"       : 2D外部流れ（円柱・翼断面等）でSTLありのケース
+- "cylinder_2d_ogrid": 2D円柱周り外部流れ（最推奨）STL不要、blockMesh O-グリッド使用
+                      スキューなし完全六面体メッシュ → pimpleFoam で安定なカルマン渦観察
+                      ★ 「2D円柱」「カルマン渦」「Re=100〜2000」等を言及したらこれを選択
+- "snappy_2d"       : 2D外部流れ（円柱以外の翼断面等）でSTLありのケース
                       dimensions=2、z方向1セル・empty境界、snappyHexMesh使用
-                      計算コストが低く非定常カルマン渦の観察に最適
 - "external_snappy" : 3D外部流れ（飛行機・車・3D物体）でSTLありのケース
                       snappyHexMesh向け設定
 - "heat_transfer"   : 熱伝導・強制対流・浮力流れを含む解析
@@ -67,11 +85,13 @@ EXTRACT_PROMPT_TEMPLATE = """以下の解析要件を解析し、OpenFOAMの設�
 以下のJSON形式で回答してください（コードブロックなし、純粋なJSONのみ）:
 {{
   "solver": "使用するソルバー名 (simpleFoam/pimpleFoam/icoFoam/rhoPimpleFoam等)",
-  "case_type": "channel_2d または channel_3d または snappy_2d または external_snappy または heat_transfer",
+  "case_type": "channel_2d または channel_3d または cylinder_2d_ogrid または snappy_2d または external_snappy または heat_transfer",
   "dimensions": 2 または 3,
   "turbulence_model": "kOmegaSST または kEpsilon または SpalartAllmaras または laminar",
   "steady_state": true または false,
   "description": "解析の簡潔な説明（日本語可）",
+  "phenomenon": "karman_vortex_shedding | airfoil_steady | channel_internal | backward_facing_step | cavity_flow | external_building | meshing_demo | general",
+  "observables": ["velocity_U", "pressure_p"],
   "inlet_velocity": 数値のみ（単位なし、例: 10.0）,
   "characteristic_length": 代表長さ[m]（数値のみ）,
   "nu": 動粘度[m^2/s]（数値のみ、空気=1.5e-5、水=1e-6）,
@@ -95,7 +115,12 @@ class PreprocessingAgent:
         self.settings = settings
         self.llm = LLMClient(settings)
 
-    def run(self, description: str, stl_path: str = "") -> SimulationSpec:
+    def run(
+        self,
+        description: str,
+        stl_path: str = "",
+        interactive: bool = True,
+    ) -> SimulationSpec:
         """
         自然言語の解析説明を SimulationSpec に変換する。
 
@@ -131,6 +156,7 @@ class PreprocessingAgent:
                     f"{'2D ' if spec.case_type == 'snappy_2d' else ''}snappyHexMesh モードで実行[/green]"
                 )
 
+        spec = clarify_spec(spec, description, interactive=interactive)
         self._print_spec_summary(spec)
         return spec
 
@@ -173,7 +199,10 @@ class PreprocessingAgent:
         case_type = _LEGACY_MAP.get(raw_case_type, raw_case_type)
 
         # mesh_template: 壁あり系は channel, 外部流れ系は box_snappy
-        if case_type == "snappy_2d":
+        if case_type == "cylinder_2d_ogrid":
+            # O-グリッドは Python ジェネレータで生成するため template 名は "ogrid_cylinder_2d"
+            mesh_template = "ogrid_cylinder_2d"
+        elif case_type == "snappy_2d":
             mesh_template = "box_snappy_2d"
         elif case_type == "channel_2d" or dimensions == 2:
             mesh_template = "box_channel_2d"
@@ -199,6 +228,8 @@ class PreprocessingAgent:
             characteristic_length=self._to_float(data.get("characteristic_length"), 1.0),
             nu=self._to_float(data.get("nu"), 1.5e-5),
             description=data.get("description", original_description),
+            phenomenon=self._normalize_phenomenon(data.get("phenomenon", ""), original_description),
+            observables=list(data.get("observables", [])),
             boundary_conditions=data.get("boundary_conditions", {}),
             mesh_params=data.get("mesh_params", {}),
             defaults_applied=defaults_applied,
@@ -206,6 +237,31 @@ class PreprocessingAgent:
         )
 
         return spec
+
+    @staticmethod
+    def _normalize_phenomenon(raw: str, description: str) -> str:
+        """LLM 出力 + キーワードフォールバックで phenomenon を正規化。"""
+        valid = {
+            "karman_vortex_shedding", "airfoil_steady", "channel_internal",
+            "backward_facing_step", "cavity_flow", "external_building",
+            "meshing_demo", "general",
+        }
+        if raw in valid:
+            return raw
+        hay = f"{raw} {description}".lower()
+        if any(k in hay for k in ("カルマン", "karman", "渦", "vortex", "円柱")):
+            return "karman_vortex_shedding"
+        if any(k in hay for k in ("翼", "airfoil", "foil", "揚力", "naca")):
+            return "airfoil_steady"
+        if any(k in hay for k in ("後方ステップ", "backward", "バックステップ", "再付着")):
+            return "backward_facing_step"
+        if any(k in hay for k in ("キャビティ", "cavity", "lid")):
+            return "cavity_flow"
+        if any(k in hay for k in ("建物", "building", "風環境")):
+            return "external_building"
+        if any(k in hay for k in ("チャンネル", "channel", "パイプ", "pipe", "ダクト")):
+            return "channel_internal"
+        return "general"
 
     @staticmethod
     def _to_float(value, default: float = 0.0) -> float:
@@ -233,9 +289,15 @@ class PreprocessingAgent:
         table.add_row("メッシュテンプレート", spec.mesh_template)
         table.add_row("乱流モデル", spec.turbulence_model)
         table.add_row("定常/非定常", "定常" if spec.steady_state else "非定常")
+        if spec.phenomenon:
+            table.add_row("現象タグ", spec.phenomenon)
         table.add_row("流入速度", f"{spec.inlet_velocity} m/s")
         if spec.re_number:
             table.add_row("Re数", f"{spec.re_number:,.0f}")
+        if spec.characteristic_length:
+            table.add_row("代表長さ", f"{spec.characteristic_length} m")
+        if spec.nu:
+            table.add_row("動粘度 nu", f"{spec.nu:g} m²/s")
         if spec.defaults_applied:
             table.add_row("自動補完", ", ".join(spec.defaults_applied))
 

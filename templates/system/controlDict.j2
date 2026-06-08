@@ -24,15 +24,23 @@ endTime         {{ end_time }};
 
 deltaT          {{ delta_t }};
 
-writeControl    {% if steady_state %}timeStep{% else %}adjustableRunTime{% endif %};
+{% if steady_state %}
+writeControl    timeStep;
+writeInterval   1;
+{% elif case_type == "cylinder_2d_ogrid" or solver == "icoFoam" %}
+// 固定 dt: adjustableRunTime の書き出しタイミング調整による dt 急変を回避
+writeControl    timeStep;
+writeInterval   {{ [1, (write_interval / delta_t) | int] | max }};
+{% else %}
+writeControl    adjustableRunTime;
 writeInterval   {{ write_interval }};
+{% endif %}
 purgeWrite      {% if steady_state %}0{% else %}5{% endif %};  // 非定常: 直近5タイムステップのみ保持
 
-{% if not steady_state %}
+{% if not steady_state and case_type != "cylinder_2d_ogrid" and solver != "icoFoam" %}
 adjustTimeStep  yes;
-maxCo           0.5;   // 保守的設定: snappyHexMesh の極細セル対策
+maxCo           0.5;
 maxAlphaCo      0.5;
-// maxDeltaT: 初期 deltaT の 100 倍まで。急激な増大を防ぐ
 maxDeltaT       {{ "%.6g" | format(delta_t * 100) }};
 {% endif %}
 

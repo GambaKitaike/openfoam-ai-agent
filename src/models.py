@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.rag.reference_case_params import ReferenceCaseParams
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -25,6 +28,8 @@ class SimulationSpec:
     nu: float = 1.5e-5                   # 動粘度 [m^2/s] (デフォルト: 空気20°C)
     re_number: float | None = None       # 計算済みRe数
     description: str = ""
+    phenomenon: str = ""                 # karman_vortex_shedding | airfoil_steady | ...
+    observables: list[str] = field(default_factory=list)
     boundary_conditions: dict = field(default_factory=dict)
     mesh_params: dict = field(default_factory=dict)
     defaults_applied: list[str] = field(default_factory=list)  # LLMが補完した項目
@@ -44,16 +49,29 @@ class SimulationSpec:
 class EnrichedContext:
     """RAGエージェントが検索結果を付加した拡張コンテキスト。"""
     spec: SimulationSpec
-    relevant_examples: list[str] = field(default_factory=list)   # 検索取得ファイル断片
-    recommended_schemes: str = ""        # 類似ケースから推薦される数値スキーム
-    recommended_bcs: str = ""            # 推薦される境界条件の記述例
-    mesh_template_name: str = ""         # 選択すべきテンプレート名
-    mesh_params_suggestion: dict = field(default_factory=dict)   # LLMへのメッシュパラメータ提案
-    rag_sources: list[str] = field(default_factory=list)         # 参照元（デバッグ用）
-    rag_available: bool = True           # RAGインデックスが存在するか
-    # チュートリアルから直接取得したシステムファイル（空文字ならテンプレートにフォールバック）
-    reference_fvschemes: str = ""        # RAGで見つかったチュートリアルの fvSchemes
-    reference_fvsolution: str = ""       # RAGで見つかったチュートリアルの fvSolution
+    rag_available: bool = True
+    rag_sources: list[str] = field(default_factory=list)
+
+    # ケース単位 RAG（主経路）
+    reference_case_id: str = ""
+    reference_case_path: str = ""
+    reference_files: dict[str, str] = field(default_factory=dict)  # rel_path → content
+    reference_title_ja: str = ""
+    reference_summary_ja: str = ""
+    reference_phenomenon: str = ""
+    reference_mesh_prebuilt: bool = False
+    reference_typical_params: "ReferenceCaseParams | None" = None
+
+    # フォールバック用（参照ケースが見つからない場合）
+    mesh_template_name: str = ""
+    mesh_params_suggestion: dict = field(default_factory=dict)
+
+    # 後方互換（非推奨・未使用）
+    relevant_examples: list[str] = field(default_factory=list)
+    recommended_schemes: str = ""
+    recommended_bcs: str = ""
+    reference_fvschemes: str = ""
+    reference_fvsolution: str = ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────

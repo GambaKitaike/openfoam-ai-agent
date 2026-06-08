@@ -33,6 +33,7 @@ output_archive/
 #  RAG / ベクトルDB (再生成可能)
 # ────────────────────────────────────────────
 knowledge_base/chroma_db/
+knowledge_base/case_intents/
 
 # ────────────────────────────────────────────
 #  STL (ユーザー生成・サイズが大きい場合)

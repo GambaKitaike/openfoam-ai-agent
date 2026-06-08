@@ -16,6 +16,7 @@ FoamFile
 {% set is_2d = (case_type == "channel_2d") %}
 {% set is_snappy = case_type in ["external_snappy", "snappy_external"] %}
 {% set is_snappy_2d = (case_type == "snappy_2d") %}
+{% set is_ogrid_2d = (case_type == "cylinder_2d_ogrid") %}
 
 dimensions      [0 1 -1 0 0 0 0];
 
@@ -34,7 +35,14 @@ boundaryField
         type            zeroGradient;
     }
 
-{% if is_snappy_2d %}
+{% if is_ogrid_2d %}
+    // O-グリッド 2D 円柱: top/bottom は symmetryPlane, front/back は empty
+    top    { type symmetryPlane; }
+    bottom { type symmetryPlane; }
+    frontAndBack { type empty; }
+    cylinder { type noSlip; }
+
+{% elif is_snappy_2d %}
     top    { type symmetryPlane; }
     bottom { type symmetryPlane; }
     front  { type empty; }

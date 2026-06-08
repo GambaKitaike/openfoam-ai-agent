@@ -2,6 +2,8 @@
 OpenFOAM AI Agent - メインエントリポイント
 4-Agent Pipeline: Pre-processing → RAG → OpenFOAMGPT → Post-processing
 """
+import sys
+
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -22,6 +24,11 @@ def run(
     output_dir: str = typer.Option("./output", "--output", "-o", help="出力先ディレクトリ"),
     threshold: float = typer.Option(1e-4, "--threshold", "-t", help="収束判定の残差閾値"),
     stl_file: str = typer.Option("", "--stl", "-s", help="物体形状のSTLファイルパス（snappyHexMesh用）"),
+    interactive: bool = typer.Option(
+        None,
+        "--interactive/--no-interactive",
+        help="未指定パラメータを対話で確認 (デフォルト: TTYなら対話)",
+    ),
 ):
     """
     【フルパイプライン】自然言語から後処理まで4エージェントが全工程を自動実行します。
@@ -31,17 +38,22 @@ def run(
     """
     settings = Settings()
     orchestrator = OpenFOAMOrchestrator(settings=settings)
+    use_interactive = interactive if interactive is not None else sys.stdin.isatty()
     orchestrator.run(
         description=description,
         output_dir=output_dir,
         convergence_threshold=threshold,
         stl_path=stl_file,
+        interactive=use_interactive,
     )
 
 
 @app.command()
 def build_index(
     no_web: bool = typer.Option(False, "--no-web", help="Webスクレイピングをスキップ"),
+    skip_enrich: bool = typer.Option(False, "--skip-enrich", help="LLM意図メタデータ生成をスキップ"),
+    enrich_only: bool = typer.Option(False, "--enrich-only", help="インデックス化せず enrich のみ"),
+    force_enrich: bool = typer.Option(False, "--force-enrich", help="キャッシュを無視して LLM 再生成"),
 ):
     """
     【RAG構築】OpenFOAMチュートリアルとWebドキュメントをインデックス化します（初回のみ）。
@@ -64,9 +76,22 @@ def build_index(
         db_path=str(db_path),
         openai_api_key=settings.openai_api_key,
     )
-    stats = indexer.build(include_web=not no_web)
-    console.print(f"\n[bold green]完了![/bold green] ローカル: {stats['local_docs']} ファイル, "
-                  f"Web: {stats['web_docs']} ページ, 合計: {stats['total_chunks']} チャンク")
+    stats = indexer.build(
+        include_web=not no_web,
+        skip_enrich=skip_enrich,
+        enrich_only=enrich_only,
+        force_enrich=force_enrich,
+    )
+    console.print(
+        f"\n[bold green]完了![/bold green] "
+        f"インデックス化: {stats.get('cases', 0)} ケース "
+        f"(スキップ {stats.get('skipped', 0)})"
+    )
+    if not skip_enrich:
+        console.print(
+            f"  intent: 新規 {stats.get('enriched', 0)}, "
+            f"キャッシュ {stats.get('cached', 0)}, 失敗 {stats.get('intent_failed', 0)}"
+        )
 
 
 @app.command()
