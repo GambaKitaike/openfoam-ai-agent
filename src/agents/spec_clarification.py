@@ -358,6 +358,19 @@ def clarify_from_reference(
     if not context.reference_case_id or context.reference_typical_params is None:
         return spec
 
+    # 現象タグが一致しない参照ケース（general 等）の典型値は上書きしない
+    ref_phenomenon = context.reference_phenomenon or "general"
+    if (
+        spec.phenomenon
+        and spec.phenomenon != "general"
+        and ref_phenomenon != spec.phenomenon
+    ):
+        console.print(
+            f"  [dim]参照ケースの現象 ({ref_phenomenon}) が "
+            f"{spec.phenomenon} と異なるため典型条件の自動適用をスキップ[/dim]"
+        )
+        return spec
+
     ref = context.reference_typical_params
     fields = collect_reference_clarifications(spec, ref)
     if not fields:

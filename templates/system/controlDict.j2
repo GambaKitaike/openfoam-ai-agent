@@ -27,6 +27,10 @@ deltaT          {{ delta_t }};
 {% if steady_state %}
 writeControl    timeStep;
 writeInterval   1;
+{% elif is_karman_ogrid %}
+// カルマン渦: 物理時間ベースで周期ごとに十分な枚数を保存
+writeControl    runTime;
+writeInterval   {{ write_interval }};
 {% elif case_type == "cylinder_2d_ogrid" or solver == "icoFoam" %}
 // 固定 dt: adjustableRunTime の書き出しタイミング調整による dt 急変を回避
 writeControl    timeStep;
@@ -35,7 +39,7 @@ writeInterval   {{ [1, (write_interval / delta_t) | int] | max }};
 writeControl    adjustableRunTime;
 writeInterval   {{ write_interval }};
 {% endif %}
-purgeWrite      {% if steady_state %}0{% else %}5{% endif %};  // 非定常: 直近5タイムステップのみ保持
+purgeWrite      {{ purge_write }};
 
 {% if not steady_state and case_type != "cylinder_2d_ogrid" and solver != "icoFoam" %}
 adjustTimeStep  yes;

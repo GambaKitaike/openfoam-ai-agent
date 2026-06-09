@@ -14,3 +14,21 @@ def test_normalize_phenomenon_airfoil():
 
 def test_normalize_phenomenon_passthrough():
     assert PreprocessingAgent._normalize_phenomenon("backward_facing_step", "") == "backward_facing_step"
+
+
+def test_karman_ogrid_forces_pimplefoam_over_icofoam():
+    agent = PreprocessingAgent.__new__(PreprocessingAgent)
+    data = {
+        "solver": "icoFoam",
+        "case_type": "cylinder_2d_ogrid",
+        "dimensions": 2,
+        "turbulence_model": "laminar",
+        "steady_state": False,
+        "inlet_velocity": 1.0,
+        "characteristic_length": 0.1,
+        "nu": 0.01,
+        "phenomenon": "karman_vortex_shedding",
+    }
+    spec = agent._build_spec(data, "2D円柱 Re=100 層流")
+    assert spec.solver == "pimpleFoam"
+    assert spec.steady_state is False

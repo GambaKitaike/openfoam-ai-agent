@@ -181,6 +181,24 @@ class OpenFOAMRunner:
             log_file=str(log_path),
         )
 
+    def run_set_fields(self, case_dir: str) -> RunResult:
+        """setFields で初期場に摂動を与える（カルマン渦用）。"""
+        log_path = Path(case_dir) / "log.setFields"
+        cmd = f"set -o pipefail; setFields -case {case_dir} 2>&1 | tee {log_path}"
+        cmd_str = _of_command(cmd, self.settings)
+        console.print("[cyan]  → setFields で後流摂動を付与中...[/cyan]")
+        result = subprocess.run(cmd_str, shell=True, capture_output=True, text=True)
+        stdout = log_path.read_text() if log_path.exists() else result.stdout
+        foam_error = "FOAM FATAL ERROR" in stdout or "FOAM exiting" in stdout
+        returncode = result.returncode if not foam_error else 1
+        return RunResult(
+            command="setFields",
+            returncode=returncode,
+            stdout=stdout,
+            stderr=result.stderr,
+            log_file=str(log_path),
+        )
+
     def run_solver(self, case_dir: str, solver: str, parallel: bool = False, n_procs: int = 4) -> RunResult:
         """
         OpenFOAMソルバーを実行する。

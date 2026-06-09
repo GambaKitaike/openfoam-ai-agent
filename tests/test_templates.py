@@ -43,6 +43,9 @@ def _base_ctx(**overrides) -> dict:
         "end_time": 1000,
         "delta_t": 1,
         "write_interval": 100,
+        "purge_write": 0,
+        "is_karman_ogrid": False,
+        "phenomenon": "",
         # blockMeshDict パラメータ
         "x_min": -5.0, "x_max": 15.0, "ly": 5.0, "depth": 0.1,
         "nx": 40, "ny": 20,
@@ -188,6 +191,43 @@ class TestSystemTemplates:
         ctx = _base_ctx(steady_state=False)
         out = jinja.get_template("system/fvSolution.j2").render(**ctx)
         assert "PIMPLE" in out
+
+    def test_fvSolution_ogrid_icofoam_has_PISO(self, jinja):
+        ctx = _base_ctx(
+            case_type="cylinder_2d_ogrid",
+            solver="icoFoam",
+            steady_state=False,
+            turbulence_model="laminar",
+        )
+        out = jinja.get_template("system/fvSolution.j2").render(**ctx)
+        assert "PISO" in out
+        assert "PIMPLE" not in out
+
+    def test_fvSolution_ogrid_pimplefoam_has_PIMPLE(self, jinja):
+        ctx = _base_ctx(
+            case_type="cylinder_2d_ogrid",
+            solver="pimpleFoam",
+            steady_state=False,
+        )
+        out = jinja.get_template("system/fvSolution.j2").render(**ctx)
+        assert "PIMPLE" in out
+
+    def test_controlDict_karman_uses_runtime_write_and_keeps_all(self, jinja):
+        ctx = _base_ctx(
+            case_type="cylinder_2d_ogrid",
+            solver="pimpleFoam",
+            steady_state=False,
+            is_karman_ogrid=True,
+            phenomenon="karman_vortex_shedding",
+            end_time=125.0,
+            write_interval=0.25,
+            delta_t=0.00035,
+            purge_write=0,
+        )
+        out = jinja.get_template("system/controlDict.j2").render(**ctx)
+        assert "writeControl    runTime" in out
+        assert "writeInterval   0.25" in out
+        assert "purgeWrite      0" in out
 
     def test_controlDict_steady_no_adjustTimeStep(self, jinja):
         ctx = _base_ctx(steady_state=True)

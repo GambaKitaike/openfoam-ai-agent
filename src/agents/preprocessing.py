@@ -47,6 +47,8 @@ PREPROCESSING_SYSTEM_PROMPT = """あなたはOpenFOAMの前処理専門エキス
 - 非定常・過渡流れ（"非定常","transient","unsteady",
   "時間変化","カルマン渦","渦の放出","振動","脈動"等） → pimpleFoam, steady_state: false
   ただし "層流","laminar" かつ Re < 2000 の場合      → icoFoam, steady_state: false （最も安定）
+  ★ 例外: case_type が cylinder_2d_ogrid または phenomenon が karman_vortex_shedding
+    → 必ず pimpleFoam（O-グリッド + icoFoam は fvSolution/phi で失敗しやすい）
 - 圧縮性流れ（マッハ数 > 0.3 or "圧縮性"）           → rhoCentralFoam, steady_state: false
 - solver が明示されていない場合: Re < 500 かつ定常 → simpleFoam、それ以外で物体周り → pimpleFoam
 
@@ -235,6 +237,12 @@ class PreprocessingAgent:
             defaults_applied=defaults_applied,
             raw_llm_output=data,
         )
+
+        # O-グリッド円柱カルマン渦は pimpleFoam 固定（icoFoam + O-grid はテンプレ不整合）
+        if case_type == "cylinder_2d_ogrid" or spec.phenomenon == "karman_vortex_shedding":
+            if spec.solver == "icoFoam":
+                spec.solver = "pimpleFoam"
+                spec.steady_state = False
 
         return spec
 

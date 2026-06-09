@@ -6,6 +6,7 @@ OpenFOAM ケースファイルを生成・実行し、失敗時に自己修正�
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
@@ -143,8 +144,11 @@ class OpenFOAMGPTAgent:
             for issue in post_errors[:3]:
                 console.print(f"[yellow]  ⚠ {issue.check}: {issue.message}[/yellow]")
 
-        # ── Step 3b: potentialFoam 初期化（外部流れ非定常のみ）─────────
-        if not spec.steady_state and (
+        # ── Step 3b: 初期化 ───────────────────────────────────────────
+        is_karman = spec.phenomenon == "karman_vortex_shedding"
+        if not spec.steady_state and is_karman and spec.case_type == "cylinder_2d_ogrid":
+            self._apply_karman_seed(case_dir, context)
+        elif not spec.steady_state and (
             spec.case_type in (
                 "snappy_2d", "snappy_external", "external_snappy", "cylinder_2d_ogrid",
             )
@@ -220,10 +224,7 @@ class OpenFOAMGPTAgent:
         spec = context.spec
         case_name = re.sub(r'[^\w-]', '_', f"{spec.solver}_{spec.case_type}")
         case_path = Path(output_dir) / case_name
-        case_path.mkdir(parents=True, exist_ok=True)
-        (case_path / "0").mkdir(exist_ok=True)
-        (case_path / "constant").mkdir(exist_ok=True)
-        (case_path / "system").mkdir(exist_ok=True)
+        self._reset_case_dir(case_path)
 
         files_created: list[str] = []
 
@@ -272,10 +273,13 @@ class OpenFOAMGPTAgent:
             "constant/transportProperties": "constant/transportProperties.j2",
             "0/U": "0/U.j2",
             "0/p": "0/p.j2",
-            "0/k": "0/k.j2",
-            "0/omega": "0/omega.j2",
-            "0/nut": "0/nut.j2",
         }
+        if spec.turbulence_model != "laminar":
+            template_map.update({
+                "0/k": "0/k.j2",
+                "0/omega": "0/omega.j2",
+                "0/nut": "0/nut.j2",
+            })
         for out_rel, tmpl_name in template_map.items():
             try:
                 content = self.jinja.get_template(tmpl_name).render(**jinja_context)
@@ -292,6 +296,20 @@ class OpenFOAMGPTAgent:
             case_type=spec.case_type,
             files_created=files_created,
         )
+
+    def _reset_case_dir(self, case_path: Path) -> None:
+        """再生成時に参照ケース由来の古いファイルを残さない。"""
+        if case_path.exists():
+            for name in case_path.iterdir():
+                if name.is_dir():
+                    shutil.rmtree(name)
+                else:
+                    name.unlink()
+        else:
+            case_path.mkdir(parents=True, exist_ok=True)
+        (case_path / "0").mkdir(exist_ok=True)
+        (case_path / "constant").mkdir(exist_ok=True)
+        (case_path / "system").mkdir(exist_ok=True)
 
     def _render_blockmesh_template(self, context: EnrichedContext) -> str:
         """blockMeshDict テンプレートをパラメータで埋めてレンダリングする。"""
@@ -442,6 +460,16 @@ class OpenFOAMGPTAgent:
         snappy_object_name = Path(spec.stl_path).stem if spec.stl_path else "object"
         is_snappy_2d = (spec.case_type == "snappy_2d")
         is_ogrid_2d = (spec.case_type == "cylinder_2d_ogrid")
+        is_karman_ogrid = (
+            is_ogrid_2d and spec.phenomenon == "karman_vortex_shedding"
+        )
+        purge_write = 0 if spec.steady_state else 5
+        karman_r = (getattr(spec, "characteristic_length", 1.0) or 1.0) / 2.0
+        wake_x0 = round(karman_r * 1.05, 4)
+        wake_x1 = round(karman_r * 6.0, 4)
+        wake_y = round(karman_r * 2.0, 4)
+        perturb_vy = round(spec.inlet_velocity * 0.05, 6)
+        depth = 0.01
 
         if spec.steady_state:
             end_time, delta_t, write_interval = 1000, 1, 100
@@ -452,7 +480,18 @@ class OpenFOAMGPTAgent:
             end_time = round(flow_through * 10, 4)   # 10 flow-through times
             write_interval = round(flow_through / 10, 5)  # 100 スナップショット
 
-            if spec.case_type == "cylinder_2d_ogrid":
+            if is_karman_ogrid:
+                # Strouhal ~0.2 @ Re~100 → 25 周期分 + 周期あたり 20 フレーム
+                st = 0.2
+                shed_period = char_len / max(st * spec.inlet_velocity, 1e-6)
+                end_time = round(shed_period * 25, 2)
+                write_interval = round(shed_period / 20, 4)
+                purge_write = 0
+                min_cell_approx = char_len * 0.007
+                delta_t = round(
+                    min_cell_approx * 0.1 / max(spec.inlet_velocity * 2, 0.01), 6
+                )
+            elif spec.case_type == "cylinder_2d_ogrid":
                 # pimpleFoam + 固定 dt (timeStep writeControl)
                 # 最小セルサイズ: 接線方向 ≈ π*r/n_t_total = π*0.5*lchar/(8*20) ≈ 0.0098*lchar
                 # 径方向 (gr_r=0.5, n_r=15): ≈ 0.007*lchar
@@ -482,10 +521,30 @@ class OpenFOAMGPTAgent:
             "snappy_object_name": snappy_object_name,
             "is_snappy_2d": is_snappy_2d,
             "is_ogrid_2d": is_ogrid_2d,
+            "is_karman_ogrid": is_karman_ogrid,
+            "phenomenon": spec.phenomenon,
+            "purge_write": purge_write,
+            "wake_x0": wake_x0,
+            "wake_x1": wake_x1,
+            "wake_y": wake_y,
+            "perturb_vy": perturb_vy,
+            "depth": depth,
             "end_time": end_time,
             "delta_t": delta_t,
             "write_interval": write_interval,
         }
+
+    def _apply_karman_seed(self, case_dir: str, context: EnrichedContext) -> None:
+        """カルマン渦: 対称な potentialFoam の代わりに後流へ摂動を与える。"""
+        case_path = Path(case_dir)
+        jinja_context = self._build_jinja_context(context)
+        content = self.jinja.get_template("system/setFieldsDict.j2").render(**jinja_context)
+        (case_path / "system" / "setFieldsDict").write_text(content)
+        result = self.runner.run_set_fields(case_dir)
+        if result.returncode == 0:
+            console.print("[green]  ✓ 後流摂動を付与（カルマン渦分岐用）[/green]")
+        else:
+            console.print("[yellow]  ⚠ setFields 失敗（数値ノイズに依存して続行）[/yellow]")
 
     def _setup_snappy_files(self, case_path: Path, context: EnrichedContext, files_created: list) -> None:
         """snappyHexMesh に必要なファイルを生成・コピーする。

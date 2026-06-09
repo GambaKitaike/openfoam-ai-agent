@@ -21,7 +21,7 @@ PHENOMENON_TAGS = frozenset({
 
 # ユーザー phenomenon → 互換チュートリアル phenomenon
 PHENOMENON_COMPAT: dict[str, set[str]] = {
-    "karman_vortex_shedding": {"karman_vortex_shedding", "general"},
+    "karman_vortex_shedding": {"karman_vortex_shedding"},
     "airfoil_steady": {"airfoil_steady", "general"},
     "channel_internal": {"channel_internal", "cavity_flow", "general"},
     "backward_facing_step": {"backward_facing_step", "general"},

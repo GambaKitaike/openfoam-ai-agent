@@ -117,3 +117,20 @@ class TestBuildJinjaContext:
         ctx = _agent()._build_jinja_context(_make_context(spec))
         # flow_through = 0.1s → delta_t = 0.1 / 50000 = 2e-6
         assert ctx["delta_t"] < 1e-4, f"snappy_2d の delta_t が大きすぎる: {ctx['delta_t']}"
+
+    def test_karman_ogrid_sets_delta_t_and_runtime_output(self):
+        spec = _make_spec(
+            steady_state=False,
+            case_type="cylinder_2d_ogrid",
+            solver="pimpleFoam",
+            phenomenon="karman_vortex_shedding",
+            turbulence_model="laminar",
+            inlet_velocity=1.0,
+            characteristic_length=1.0,
+        )
+        ctx = _agent()._build_jinja_context(_make_context(spec))
+        assert ctx["is_karman_ogrid"] is True
+        assert ctx["delta_t"] > 0
+        assert ctx["purge_write"] == 0
+        assert ctx["end_time"] == pytest.approx(125.0, rel=0.05)
+        assert ctx["write_interval"] == pytest.approx(0.25, rel=0.05)

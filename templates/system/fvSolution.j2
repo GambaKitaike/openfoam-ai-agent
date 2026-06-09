@@ -130,18 +130,27 @@ relaxationFactors
 
 {% else %}
 {% if is_ogrid_2d %}
-// O-グリッド 2D 円柱: pimpleFoam を使用 (icoFoam の phi 更新問題を回避)
+// O-グリッド 2D 円柱
 potentialFlow
 {
     nNonOrthogonalCorrectors 10;
 }
 
+{% if solver == "icoFoam" %}
+PISO
+{
+    nCorrectors         4;
+    nNonOrthogonalCorrectors 3;
+}
+{% else %}
+// pimpleFoam 推奨 (icoFoam は O-グリッドで phi 更新問題あり)
 PIMPLE
 {
     nOuterCorrectors    1;
     nCorrectors         4;
     nNonOrthogonalCorrectors 2;
 }
+{% endif %}
 {% elif solver == "icoFoam" %}
 PISO
 {

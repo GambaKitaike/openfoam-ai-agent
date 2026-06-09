@@ -63,7 +63,7 @@ def test_case_intent_normalize_invalid_phenomenon():
 
 def test_phenomenon_matches_compat():
     assert phenomenon_matches("karman_vortex_shedding", "karman_vortex_shedding")
-    assert phenomenon_matches("karman_vortex_shedding", "general")
+    assert not phenomenon_matches("karman_vortex_shedding", "general")
     assert not phenomenon_matches("karman_vortex_shedding", "airfoil_steady")
     assert phenomenon_matches("", "airfoil_steady")
 
