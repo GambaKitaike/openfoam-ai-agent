@@ -16,6 +16,12 @@ from .agents.prompt_generation import PromptGenerationAgent
 from .agents.openfoam_gpt import OpenFOAMGPTAgent
 from .agents.postprocessing import PostprocessingAgent
 from .agents.spec_clarification import clarify_from_reference
+from .agent_dialogue import (
+    AgentDialogueReport,
+    offline_draft_spec,
+    print_dialogue_report,
+    spec_snapshot,
+)
 
 console = Console()
 
@@ -27,10 +33,7 @@ class OpenFOAMOrchestrator:
     4 エージェントを統括するオーケストレーター。
 
     パイプライン:
-      Agent① Pre-processing   : 自然言語 → SimulationSpec
-      Agent② Prompt Generation: SimulationSpec + ケース単位 RAG → EnrichedContext
-      Agent③ OpenFOAMGPT      : EnrichedContext → 生成・実行・自己修正 → CaseArtifacts
-      Agent④ Post-processing  : CaseArtifacts → 妥当性チェック → AnalysisReport
+      Agent②(要件) → Agent①(ヒアリング) → Agent②(参照) → Agent③(生成・実行) → Agent④
     """
 
     def __init__(self, settings: Settings):
@@ -71,39 +74,48 @@ class OpenFOAMOrchestrator:
             console.print(f"[bold]STL:[/bold] {stl_path}")
         console.print(f"[bold]出力先:[/bold] {output_dir}\n")
 
-        # ── Agent① ───────────────────────────────────────────────────
-        console.print(Rule("[bold]Agent①  Pre-processing[/bold]"))
-        spec = self.agent1.run(description, stl_path=stl_path, interactive=interactive)
+        # ── Agent①: draft 抽出 ────────────────────────────────────────
+        console.print(Rule("[bold]Agent①  Pre-processing (extract)[/bold]"))
+        spec = self.agent1.extract(description, stl_path=stl_path)
+
+        # ── Agent② + Agent①: 内部ループ（充足 → レビュー）────────────────
+        console.print(Rule("[bold]Agent① ↔ Agent②  Spec Completion[/bold]"))
+        spec = self.agent1.complete_hearing(
+            spec, self.agent2, description, interactive=interactive
+        )
 
         # ── Agent② + Agent③（ケース再選定ループ）────────────────────
         exclude_case_ids: list[str] = []
-        context = None
+        match = None
         artifacts = None
 
         for attempt in range(1, MAX_CASE_RETRIES + 1):
-            console.print(Rule(f"[bold]Agent②  Case Selection (試行 {attempt}/{MAX_CASE_RETRIES})[/bold]"))
-            context = self.agent2.run(spec, exclude_case_ids=exclude_case_ids)
+            console.print(Rule(
+                f"[bold]Agent②  Reference Match (試行 {attempt}/{MAX_CASE_RETRIES})[/bold]"
+            ))
+            match = self.agent2.retrieve_match(spec, exclude_case_ids=exclude_case_ids)
 
-            if context.reference_case_id:
-                spec = clarify_from_reference(spec, context, interactive=interactive)
-                context.spec = spec
+            if match.context.reference_case_id:
+                spec = clarify_from_reference(spec, match.context, interactive=interactive)
+                match.context.spec = spec
 
             console.print(Rule("[bold]Agent③  OpenFOAMGPT[/bold]"))
             artifacts = self.agent3.run(
-                context=context,
+                context=match.context,
                 output_dir=output_dir,
                 convergence_threshold=convergence_threshold,
+                reference_match=match,
             )
 
             if artifacts.solver_success:
                 break
 
-            if context.reference_case_id:
+            if match.context.reference_case_id:
                 console.print(
-                    f"[yellow]  参照ケース {context.reference_case_id} で失敗。"
+                    f"[yellow]  参照ケース {match.context.reference_case_id} で失敗。"
                     f"別ケースを試します...[/yellow]"
                 )
-                exclude_case_ids.append(context.reference_case_id)
+                exclude_case_ids.append(match.context.reference_case_id)
             else:
                 break
 
@@ -112,3 +124,53 @@ class OpenFOAMOrchestrator:
         report = self.agent4.run(artifacts)
 
         return report
+
+    def test_agent_dialogue(
+        self,
+        description: str,
+        *,
+        interactive: bool = False,
+        include_reference_match: bool = True,
+        offline: bool = False,
+        scenario: str = "",
+    ) -> AgentDialogueReport:
+        """
+        Agent① ↔ Agent②（＋任意で Agent② → Agent③）の通信を記録して返す。
+        ソルバーは実行しない。
+        """
+        trace = AgentDialogueReport(description=description)
+
+        if offline:
+            console.print(Rule("[bold]Agent①  draft spec (offline)[/bold]"))
+            spec = offline_draft_spec(scenario or "channel_conflict", description)
+        else:
+            console.print(Rule("[bold]Agent①  Pre-processing (extract)[/bold]"))
+            spec = self.agent1.extract(description)
+
+        console.print(Rule("[bold]Agent① ↔ Agent②  Spec Completion[/bold]"))
+        spec = self.agent1.complete_hearing(
+            spec, self.agent2, description, interactive=interactive, trace=trace
+        )
+        trace.final_spec = spec
+
+        if include_reference_match:
+            console.print(Rule("[bold]Agent②  Reference Match[/bold]"))
+            match = self.agent2.retrieve_match(spec)
+            trace.reference_match = match
+            trace.add(
+                round_num=0,
+                from_agent="Agent②",
+                to_agent="Agent③",
+                kind="reference_match",
+                summary=(
+                    f"score={match.score:.2f}, "
+                    f"route={'fast' if match.use_fast_path else 'staged'}, "
+                    f"ref={match.context.reference_case_id or 'none'}"
+                ),
+                reference_case_id=match.context.reference_case_id,
+                score=match.score,
+                use_fast_path=match.use_fast_path,
+            )
+
+        print_dialogue_report(trace)
+        return trace

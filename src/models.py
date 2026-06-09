@@ -42,6 +42,71 @@ class SimulationSpec:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Agent② → Agent① 要件プロファイル
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class RequirementField:
+    """Agent① ヒアリングで確認すべき 1 項目。"""
+    key: str
+    required: bool
+    reason: str
+    suggested: float | str | bool | None = None
+    parser: str = "float"  # float | str | bool
+
+
+@dataclass
+class RequirementProfile:
+    """現象・ケースタイプに応じた必要十分条件。"""
+    phenomenon: str
+    fields: list[RequirementField] = field(default_factory=list)
+    constraints: list[str] = field(default_factory=list)
+    similar_case_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SpecReviewAlternative:
+    """同一矛盾に対する別の修正方針。"""
+    key: str
+    suggested: float | str | bool | None
+    label: str
+
+
+@dataclass
+class SpecReviewIssue:
+    """Agent② が Agent① の spec に対して指摘する 1 項目。"""
+    key: str
+    message: str
+    suggested: float | str | bool | None = None
+    severity: str = "warning"  # warning | error
+    user_locked: bool = False  # 説明文でユーザーが明示した値
+    alternatives: list[SpecReviewAlternative] = field(default_factory=list)
+
+
+@dataclass
+class ReferenceMatch:
+    """参照ケース選定結果 + fast path 判定。"""
+    context: "EnrichedContext"
+    score: float = 0.0
+    use_fast_path: bool = False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agent③ 段階的ケース生成状態
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class CaseBuildState:
+    """段階的生成パイプラインの中間状態。"""
+    case_dir: str
+    spec: SimulationSpec
+    files_created: list[str] = field(default_factory=list)
+    patch_names: list[str] = field(default_factory=list)
+    build_path: str = "staged"  # staged | reference_fast
+    completed_steps: list[str] = field(default_factory=list)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Agent② → Agent③ へ渡すデータ
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -84,6 +149,8 @@ class GenerationResult:
     output_path: str
     case_type: str
     files_created: list[str] = field(default_factory=list)
+    mesh_built: bool = False
+    build_path: str = "staged"  # staged | reference_fast
 
 
 @dataclass

@@ -15,7 +15,7 @@ from rich.table import Table
 from ..config import Settings
 from ..llm_client import LLMClient
 from ..models import SimulationSpec
-from .spec_clarification import clarify_spec
+from .spec_clarification import clarify_spec, hearing_loop_with_agent2
 
 console = Console()
 
@@ -117,6 +117,31 @@ class PreprocessingAgent:
         self.settings = settings
         self.llm = LLMClient(settings)
 
+    def extract(self, description: str, stl_path: str = "") -> SimulationSpec:
+        """自然言語から draft SimulationSpec を抽出（ヒアリング前）。"""
+        prompt = EXTRACT_PROMPT_TEMPLATE.format(description=description)
+        raw = self.llm.chat(prompt, system=PREPROCESSING_SYSTEM_PROMPT)
+        data = self._parse_json(raw)
+        spec = self._build_spec(data, description)
+        if stl_path:
+            self._apply_stl_path(spec, stl_path)
+        return spec
+
+    def complete_hearing(
+        self,
+        spec: SimulationSpec,
+        agent2,
+        description: str = "",
+        interactive: bool = True,
+        trace=None,
+    ) -> SimulationSpec:
+        """Agent② と内部ループし spec を完成・レビューする。"""
+        spec = hearing_loop_with_agent2(
+            spec, agent2, description, interactive=interactive, trace=trace
+        )
+        self._print_spec_summary(spec)
+        return spec
+
     def run(
         self,
         description: str,
@@ -133,34 +158,26 @@ class PreprocessingAgent:
         Returns:
             SimulationSpec
         """
-        prompt = EXTRACT_PROMPT_TEMPLATE.format(description=description)
-        raw = self.llm.chat(prompt, system=PREPROCESSING_SYSTEM_PROMPT)
-
-        data = self._parse_json(raw)
-        spec = self._build_spec(data, description)
-
-        # STLが指定された場合はsnappyHexMeshフローに上書き
-        if stl_path:
-            from pathlib import Path as _Path
-            if not _Path(stl_path).exists():
-                from rich.console import Console as _Console
-                _Console().print(f"[red]警告: STLファイルが見つかりません: {stl_path}[/red]")
-            else:
-                spec.stl_path = stl_path
-                # LLM が snappy_2d を選んだ場合はそのまま、3D なら snappy_external
-                if spec.case_type != "snappy_2d":
-                    is_2d_input = spec.dimensions == 2
-                    spec.case_type = "snappy_2d" if is_2d_input else "snappy_external"
-                spec.mesh_template = "box_snappy_2d" if spec.case_type == "snappy_2d" else "box_snappy"
-                from rich.console import Console as _Console
-                _Console().print(
-                    f"  [green]STL検出: {_Path(stl_path).name} → "
-                    f"{'2D ' if spec.case_type == 'snappy_2d' else ''}snappyHexMesh モードで実行[/green]"
-                )
-
+        spec = self.extract(description, stl_path=stl_path)
         spec = clarify_spec(spec, description, interactive=interactive)
         self._print_spec_summary(spec)
         return spec
+
+    def _apply_stl_path(self, spec: SimulationSpec, stl_path: str) -> None:
+        """STL が指定された場合は snappyHexMesh フローに上書き。"""
+        from pathlib import Path as _Path
+        if not _Path(stl_path).exists():
+            console.print(f"[red]警告: STLファイルが見つかりません: {stl_path}[/red]")
+            return
+        spec.stl_path = stl_path
+        if spec.case_type != "snappy_2d":
+            is_2d_input = spec.dimensions == 2
+            spec.case_type = "snappy_2d" if is_2d_input else "snappy_external"
+        spec.mesh_template = "box_snappy_2d" if spec.case_type == "snappy_2d" else "box_snappy"
+        console.print(
+            f"  [green]STL検出: {_Path(stl_path).name} → "
+            f"{'2D ' if spec.case_type == 'snappy_2d' else ''}snappyHexMesh モードで実行[/green]"
+        )
 
     def _parse_json(self, text: str) -> dict:
         """LLM 出力から JSON を抽出する。"""

@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import FloatPrompt, Prompt
 
-from ..models import EnrichedContext, SimulationSpec
+from ..models import EnrichedContext, SimulationSpec, SpecReviewIssue
 from ..rag.reference_case_params import ReferenceCaseParams
 
 console = Console()
@@ -278,6 +278,245 @@ def clarify_spec(
         spec.defaults_applied.append(f"confirmed_{f.key}")
 
     _recalc_re(spec)
+    return spec
+
+
+def _apply_profile_field(spec: SimulationSpec, f: ClarificationField) -> None:
+    """RequirementProfile の 1 項目を spec に反映する。"""
+    if f.suggested is None:
+        current = getattr(spec, f.key, None)
+        if current not in (None, "", 0):
+            return
+        raise ValueError(f"推奨値がありません: {f.key}")
+
+    if f.parser == "str":
+        setattr(spec, f.key, str(f.suggested))
+    elif f.parser == "bool":
+        setattr(spec, f.key, bool(f.suggested))
+    elif f.key == "nu":
+        spec.nu = float(f.suggested)
+    else:
+        setattr(spec, f.key, float(f.suggested))
+
+
+def clarify_with_profile(
+    spec: SimulationSpec,
+    profile,
+    description: str = "",
+    interactive: bool = True,
+) -> SimulationSpec:
+    """Agent② RequirementProfile に基づき spec を完成させる。"""
+    from ..case_builder.policy import apply_solver_policy, reconcile_re
+    from ..rag.requirement_profile import apply_profile_defaults
+
+    target_re = _parse_re_from_description(description)
+    apply_profile_defaults(spec, profile)
+
+    if target_re is not None:
+        reconcile_re(spec, target_re)
+
+    fields = []
+    for rf in profile.fields:
+        fields.append(ClarificationField(
+            key=rf.key,
+            label=rf.key,
+            current=getattr(spec, rf.key, ""),
+            suggested=rf.suggested,
+            reason=rf.reason,
+            parser=rf.parser,
+        ))
+
+    if not fields:
+        apply_solver_policy(spec)
+        _recalc_re(spec)
+        return spec
+
+    if not interactive:
+        console.print(
+            f"  [dim]要件プロファイル {len(fields)} 件 — 推奨値を自動適用[/dim]"
+        )
+        for f in fields:
+            _apply_profile_field(spec, f)
+            spec.defaults_applied.append(f"profile_{f.key}")
+    else:
+        console.print(Panel(
+            "Agent② のケース知識に基づき、不足パラメータを確認します。",
+            title="[bold yellow]解析条件の確認[/bold yellow]",
+            border_style="yellow",
+        ))
+        for f in fields:
+            if f.parser == "str":
+                raw = Prompt.ask(
+                    f"{f.label} — {f.reason}\n  現在: {f.current}  推奨: [{f.suggested}]",
+                    default=str(f.suggested),
+                )
+                setattr(spec, f.key, raw.strip() or str(f.suggested))
+            elif f.parser == "bool":
+                setattr(spec, f.key, bool(f.suggested))
+            elif f.key == "nu":
+                raw = Prompt.ask(
+                    f"{f.label} — {f.reason}\n  現在: {f.current:g}  推奨: [{float(f.suggested):g}]",
+                    default=f"{float(f.suggested):g}",
+                )
+                try:
+                    spec.nu = float(raw)
+                except ValueError:
+                    spec.nu = float(f.suggested)
+            else:
+                raw = FloatPrompt.ask(
+                    f"{f.label} — {f.reason}\n  現在: {f.current}  推奨",
+                    default=float(f.suggested),
+                )
+                setattr(spec, f.key, float(raw))
+            spec.defaults_applied.append(f"confirmed_{f.key}")
+
+    if target_re is not None:
+        reconcile_re(spec, target_re)
+
+    apply_solver_policy(spec)
+    _recalc_re(spec)
+    return spec
+
+
+MAX_AGENT2_HEARING_ROUNDS = 3
+
+
+def hearing_loop_with_agent2(
+    spec: SimulationSpec,
+    agent2,
+    description: str = "",
+    interactive: bool = True,
+    trace: "AgentDialogueReport | None" = None,
+) -> SimulationSpec:
+    """
+    Agent① ↔ Agent② 内部ループ: 充足 → レビュー → 修正を繰り返す。
+    interactive=True なら Agent② の指摘をユーザーにも確認する。
+    """
+    from ..rag.requirement_profile import apply_review_fixes, review_spec
+
+    if trace is not None:
+        from ..agent_dialogue import profile_snapshot, issues_snapshot, spec_snapshot
+        trace.add(
+            round_num=0,
+            from_agent="Agent①",
+            to_agent="Agent②",
+            kind="draft_spec",
+            summary="draft SimulationSpec",
+            spec=spec_snapshot(spec),
+        )
+
+    for round_num in range(1, MAX_AGENT2_HEARING_ROUNDS + 1):
+        profile = agent2.get_requirement_profile(spec, description)
+        if trace is not None:
+            trace.add(
+                round_num=round_num,
+                from_agent="Agent②",
+                to_agent="Agent①",
+                kind="requirement_profile",
+                summary=f"必要項目 {sum(1 for f in profile.fields if f.required)} 件",
+                profile=profile_snapshot(profile),
+            )
+        spec = clarify_with_profile(spec, profile, description, interactive=interactive)
+        issues = agent2.review_spec(spec, profile, description)
+        if trace is not None:
+            trace.add(
+                round_num=round_num,
+                from_agent="Agent①",
+                to_agent="Agent②",
+                kind="clarified_spec",
+                summary="ヒアリング後の SimulationSpec",
+                spec=spec_snapshot(spec),
+            )
+        if issues and trace is not None:
+            trace.add(
+                round_num=round_num,
+                from_agent="Agent②",
+                to_agent="Agent①",
+                kind="review_issues",
+                summary=f"レビュー指摘 {len(issues)} 件",
+                issues=issues_snapshot(issues),
+            )
+        if not issues:
+            if round_num > 1:
+                console.print(f"  [green]Agent② レビュー OK（ラウンド {round_num}）[/green]")
+            break
+
+        console.print(Panel(
+            "\n".join(f"• [{i.severity}] {i.message}" for i in issues),
+            title=f"[bold yellow]Agent② レビュー (ラウンド {round_num})[/bold yellow]",
+            border_style="yellow",
+        ))
+
+        if interactive:
+            for issue in issues:
+                if issue.alternatives and not issue.user_locked:
+                    opts = f"1) {issue.key} → {issue.suggested}"
+                    for idx, alt in enumerate(issue.alternatives, start=2):
+                        opts += f"  {idx}) {alt.label}"
+                    choice = Prompt.ask(
+                        f"{issue.message}\n  {opts}\n  番号を選択",
+                        default="1",
+                    ).strip()
+                    if choice == "1" and issue.suggested is not None:
+                        setattr(spec, issue.key, issue.suggested)
+                        spec.defaults_applied.append(f"agent2_review_{issue.key}")
+                    else:
+                        try:
+                            alt_idx = int(choice) - 2
+                            alt = issue.alternatives[alt_idx]
+                            setattr(spec, alt.key, alt.suggested)
+                            spec.defaults_applied.append(f"agent2_review_{alt.key}")
+                        except (ValueError, IndexError):
+                            if issue.suggested is not None:
+                                setattr(spec, issue.key, issue.suggested)
+                                spec.defaults_applied.append(f"agent2_review_{issue.key}")
+                elif issue.user_locked:
+                    ans = Prompt.ask(
+                        f"{issue.message}\n  Agent② 推奨: [{issue.suggested}] — この設定のまま続行しますか？ (y/N)",
+                        default="n",
+                    )
+                    if ans.strip().lower() not in ("y", "yes", "はい"):
+                        if issue.suggested is not None and hasattr(spec, issue.key):
+                            setattr(spec, issue.key, issue.suggested)
+                            spec.defaults_applied.append(f"agent2_review_{issue.key}")
+                elif issue.severity == "error" or issue.suggested is not None:
+                    if issue.suggested is not None and hasattr(spec, issue.key):
+                        raw = Prompt.ask(
+                            f"{issue.message}\n  推奨 [{issue.suggested}] を採用しますか？ (Y/n)",
+                            default="y",
+                        )
+                        if raw.strip().lower() not in ("n", "no", "いいえ"):
+                            setattr(spec, issue.key, issue.suggested)
+                            spec.defaults_applied.append(f"agent2_review_{issue.key}")
+        else:
+            auto = [i for i in issues if not i.user_locked]
+            locked = [i for i in issues if i.user_locked]
+            if auto:
+                apply_review_fixes(spec, auto, respect_user_lock=True)
+                if trace is not None:
+                    trace.add(
+                        round_num=round_num,
+                        from_agent="Agent①",
+                        to_agent="Agent②",
+                        kind="review_fixes",
+                        summary=f"自動修正 {len(auto)} 件",
+                        spec=spec_snapshot(spec),
+                    )
+                console.print(
+                    f"  [dim]Agent② が {len(auto)} 件を自動修正"
+                    f"{f'（{len(locked)} 件は説明文の指定を維持）' if locked else ''}[/dim]"
+                )
+            elif locked:
+                console.print(
+                    f"  [dim]Agent② が {len(locked)} 件の矛盾を検出 — "
+                    f"説明文の指定を維持[/dim]"
+                )
+                break
+
+        from ..case_builder.policy import apply_solver_policy
+        apply_solver_policy(spec)
+        _recalc_re(spec)
+
     return spec
 
 

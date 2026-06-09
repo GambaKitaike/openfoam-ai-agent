@@ -10,6 +10,7 @@ from rich.panel import Panel
 
 from .orchestrator import OpenFOAMOrchestrator
 from .config import Settings
+from .agent_dialogue import BUILTIN_SCENARIOS
 
 app = typer.Typer(
     help="OpenFOAMの解析ファイルを自動生成・実行するAIエージェント (4-Agent Pipeline)",
@@ -92,6 +93,90 @@ def build_index(
             f"  intent: 新規 {stats.get('enriched', 0)}, "
             f"キャッシュ {stats.get('cached', 0)}, 失敗 {stats.get('intent_failed', 0)}"
         )
+
+
+@app.command("test-agents")
+def test_agents(
+    description: str = typer.Argument(
+        "",
+        help="テストする自然言語入力（空なら内蔵シナリオを実行）",
+    ),
+    scenario: str = typer.Option(
+        "",
+        "--scenario",
+        "-s",
+        help="内蔵シナリオ: karman | channel_conflict | channel_laminar",
+    ),
+    all_scenarios: bool = typer.Option(
+        False,
+        "--all",
+        help="内蔵シナリオをすべて実行",
+    ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive/--no-interactive",
+        help="Agent② レビューをユーザー確認付きで実行",
+    ),
+    skip_match: bool = typer.Option(
+        False,
+        "--skip-match",
+        help="Agent② → Agent③ の Reference Match をスキップ",
+    ),
+    offline: bool = typer.Option(
+        False,
+        "--offline",
+        help="Agent① の LLM extract をスキップ（Agent 間ループのみテスト）",
+    ),
+):
+    """
+    【Agent 通信テスト】Agent①↔Agent② の内部ループと Reference Match を記録（ソルバー実行なし）。
+
+    例:
+      python -m src.main test-agents --all
+      python -m src.main test-agents -s channel_conflict
+      python -m src.main test-agents "2D円柱 Re=100 カルマン渦"
+    """
+    settings = Settings()
+    orchestrator = OpenFOAMOrchestrator(settings=settings)
+
+    builtin = BUILTIN_SCENARIOS
+
+    if all_scenarios:
+        for name, text in builtin.items():
+            console.print(f"\n[bold]{'=' * 60}[/bold]")
+            console.print(f"[bold]Scenario: {name}[/bold]\n")
+            orchestrator.test_agent_dialogue(
+                text,
+                interactive=interactive,
+                include_reference_match=not skip_match,
+                offline=offline,
+                scenario=name,
+            )
+        return
+
+    if scenario:
+        if scenario not in builtin:
+            console.print(
+                f"[red]未知のシナリオ: {scenario}[/red] "
+                f"(利用可能: {', '.join(builtin)})"
+            )
+            raise typer.Exit(1)
+        text = builtin[scenario]
+        scenario_key = scenario
+    elif description:
+        text = description
+        scenario_key = ""
+    else:
+        text = builtin["channel_conflict"]
+        scenario_key = "channel_conflict"
+
+    orchestrator.test_agent_dialogue(
+        text,
+        interactive=interactive,
+        include_reference_match=not skip_match,
+        offline=offline,
+        scenario=scenario_key,
+    )
 
 
 @app.command()

@@ -10,9 +10,11 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 
-from ..models import SimulationSpec, EnrichedContext
+from ..models import SimulationSpec, EnrichedContext, ReferenceMatch
 from .case_selector import CaseSelector
+from .match_score import compute_match_score, should_use_fast_path
 from .reference_case_params import extract_reference_params
+from .requirement_profile import build_requirement_profile
 
 console = Console()
 
@@ -33,6 +35,46 @@ class OpenFOAMRetriever:
         """後方互換: Agent② の件数表示用。"""
         return self.selector.collection
 
+    def get_requirement_profile(
+        self,
+        spec: SimulationSpec,
+        description: str = "",
+    ):
+        """Agent① 用: 必要十分条件プロファイル。"""
+        similar: list[str] = []
+        if self.is_available:
+            try:
+                matched = self.selector.list_cases_matching(spec, limit=3)
+                similar = [m.get("case_id", "") for m in matched if m.get("case_id")]
+            except Exception:
+                pass
+        return build_requirement_profile(spec, description, similar)
+
+    def retrieve_match(
+        self,
+        spec: SimulationSpec,
+        exclude_case_ids: list[str] | None = None,
+    ) -> ReferenceMatch:
+        """参照ケース選定 + match_score。"""
+        context = self.retrieve(spec, exclude_case_ids=exclude_case_ids)
+        score = 0.0
+        use_fast = False
+        if context.reference_case_id:
+            meta = self._meta_for_case(context.reference_case_id)
+            if meta:
+                score = compute_match_score(spec, meta)
+                use_fast = should_use_fast_path(spec, meta, score)
+        return ReferenceMatch(context=context, score=score, use_fast_path=use_fast)
+
+    def _meta_for_case(self, case_id: str) -> dict | None:
+        try:
+            result = self.collection.get(ids=[case_id], include=["metadatas"])
+            if result and result["metadatas"]:
+                return result["metadatas"][0]
+        except Exception:
+            pass
+        return None
+
     def retrieve(
         self,
         spec: SimulationSpec,
@@ -52,10 +94,11 @@ class OpenFOAMRetriever:
         selected = self.selector.select(spec, exclude_case_ids=exclude_case_ids)
         if selected:
             meta = selected["metadata"]
-            # 参照ケースの solver を spec に同期（整合性確保）
-            case_solver = meta.get("solver", spec.solver)
-            if case_solver:
-                spec.solver = case_solver
+            # 参照ケースの solver を spec に同期（カルマン渦は policy 優先）
+            if spec.phenomenon != "karman_vortex_shedding":
+                case_solver = meta.get("solver", spec.solver)
+                if case_solver:
+                    spec.solver = case_solver
             mesh_prebuilt = meta.get("mesh_prebuilt") in (True, "True", "true", "1")
             if mesh_prebuilt:
                 case_turb = meta.get("turbulence_model", "")
