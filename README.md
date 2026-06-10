@@ -4,6 +4,13 @@
 
 **目標:** OpenFOAM 版 Cursor — ユーザーと対話しながらケースを育て、実行・エラー修正を繰り返すエージェント（現在は検証段階のプロトタイプ）。
 
+### デモ: カルマン渦（Re=1000）
+
+2D 円柱 O-グリッド / `pimpleFoam`（層流）/ 上下 `slip` 境界 / U=1 m/s, D=1 m, ν=0.001 m²/s  
+ParaView で保存した **Uy**（y 方向速度）アニメーション:
+
+![カルマン渦 Re=1000 — Uy](docs/demo/karman_re1000.gif)
+
 ---
 
 ## 現状の機能（2026-06）
@@ -20,7 +27,7 @@
 
 - **Jinja テンプレート (`templates/*.j2`) を廃止** — OpenFOAM 辞書は `src/case_builder/builders.py` と Python メッシュ生成器で決定的に生成
 - **Agent② レビューループ** — Re と乱流モデルの矛盾などを Agent 間で検出・修正（層流指定時は U を下げる選択肢も提示）
-- **カルマン渦 (Re≈100)** — O-グリッド + `pimpleFoam` + 後流摂動で非定常渦列を確認済み
+- **カルマン渦 (Re≈1000)** — O-グリッド + `pimpleFoam` + 上下 `slip` BC + 後流摂動で非定常渦列を確認（[デモ GIF](docs/demo/karman_re1000.gif)）
 - **`test-agents` CLI** — ソルバー実行なしで Agent 間通信を可視化
 
 ### ケース単位 RAG
@@ -131,6 +138,9 @@ openfoam-ai-agent/
 │       ├── prompt_generation.py     Agent②
 │       ├── openfoam_gpt.py          Agent③
 │       └── postprocessing.py        Agent④
+├── docs/
+│   └── demo/
+│       └── karman_re1000.gif          カルマン渦デモアニメーション
 ├── knowledge_base/
 │   ├── case_intents/                intent JSON キャッシュ
 │   └── chroma_db/                   ベクトル DB（.gitignore）
