@@ -34,8 +34,10 @@ def compute_time_settings(spec: SimulationSpec) -> dict:
     if spec.phenomenon == "karman_vortex_shedding" and spec.case_type == "cylinder_2d_ogrid":
         st = 0.2
         shed_period = char_len / (st * u)
+        demo = bool(spec.mesh_params.get("demo_mode"))
+        n_periods = 5 if demo else 25
         return {
-            "end_time": round(shed_period * 25, 2),
+            "end_time": round(shed_period * n_periods, 2),
             "delta_t": round(char_len * 0.007 * 0.1 / max(u * 2, 0.01), 6),
             "write_interval": round(shed_period / 20, 4),
             "purge_write": 0,

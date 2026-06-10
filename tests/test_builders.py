@@ -63,6 +63,16 @@ class TestBuilders:
         out = builders.build_u_field(_spec(case_type="cylinder_2d_ogrid"), patches)
         assert "cylinder { type noSlip; }" in out
         assert "frontAndBack { type empty; }" in out
+        assert "top { type slip; }" in out
+        assert "bottom { type slip; }" in out
+        assert "symmetryPlane" not in out
+        assert "freestream" not in out
+
+    def test_p_field_ogrid_slip_walls(self):
+        patches = ["inlet", "outlet", "top", "bottom", "cylinder", "frontAndBack"]
+        out = builders.build_p_field(_spec(case_type="cylinder_2d_ogrid"), patches)
+        assert "top { type zeroGradient; }" in out
+        assert "bottom { type zeroGradient; }" in out
 
     def test_set_fields_dict_karman(self):
         out = builders.build_set_fields_dict(_spec(
@@ -71,3 +81,8 @@ class TestBuilders:
         ))
         assert "setFieldsDict" in out
         assert "boxToCell" in out
+
+    def test_decompose_par_dict(self):
+        out = builders.build_decompose_par_dict(4)
+        assert "numberOfSubdomains 4" in out
+        assert "(2 2 1)" in out

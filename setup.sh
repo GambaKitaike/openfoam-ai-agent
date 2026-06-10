@@ -26,6 +26,7 @@ echo ""
 echo "[3/4] 必要なライブラリをインストール..."
 ./venv/bin/pip install --upgrade pip -q
 ./venv/bin/pip install -r requirements.txt
+./venv/bin/pip install -e .
 
 # 4. .env ファイルの作成 (初回のみ)
 echo ""
@@ -60,4 +61,6 @@ echo "     例: code .env  または  nano .env"
 echo ""
 echo "  2. エージェントを起動するには:"
 echo "     source venv/bin/activate"
-echo "     python src/main.py"
+echo "     cd $PROJECT_DIR"
+echo "     python -m src.main run \"解析の説明\" -o ./output"
+echo "     # または: openfoam-agent run \"解析の説明\" -o ./output"

@@ -51,6 +51,9 @@ class OpenFOAMOrchestrator:
         convergence_threshold: float = 1e-4,
         stl_path: str = "",
         interactive: bool = True,
+        parallel: bool = False,
+        n_procs: int = 4,
+        demo: bool = False,
     ) -> AnalysisReport:
         """
         自然言語入力からParaView案内まで全工程を実行する。
@@ -72,7 +75,12 @@ class OpenFOAMOrchestrator:
         console.print(f"\n[bold]入力:[/bold] {description}")
         if stl_path:
             console.print(f"[bold]STL:[/bold] {stl_path}")
-        console.print(f"[bold]出力先:[/bold] {output_dir}\n")
+        console.print(f"[bold]出力先:[/bold] {output_dir}")
+        if parallel:
+            console.print(f"[bold]並列:[/bold] mpirun -np {n_procs}")
+        if demo:
+            console.print("[bold]デモ:[/bold] 短時間設定 (GIF/プレビュー向け)")
+        console.print()
 
         # ── Agent①: draft 抽出 ────────────────────────────────────────
         console.print(Rule("[bold]Agent①  Pre-processing (extract)[/bold]"))
@@ -83,6 +91,8 @@ class OpenFOAMOrchestrator:
         spec = self.agent1.complete_hearing(
             spec, self.agent2, description, interactive=interactive
         )
+        if demo:
+            spec.mesh_params["demo_mode"] = True
 
         # ── Agent② + Agent③（ケース再選定ループ）────────────────────
         exclude_case_ids: list[str] = []
@@ -105,6 +115,8 @@ class OpenFOAMOrchestrator:
                 output_dir=output_dir,
                 convergence_threshold=convergence_threshold,
                 reference_match=match,
+                parallel=parallel,
+                n_procs=n_procs,
             )
 
             if artifacts.solver_success:

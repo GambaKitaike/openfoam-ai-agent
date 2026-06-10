@@ -18,6 +18,55 @@ FoamFile
 """
 
 
+def _patch_simple(name: str, bc_type: str) -> str:
+    return f"    {name} {{ type {bc_type}; }}"
+
+
+def _patch_typed(name: str, bc_type: str, **extra: str) -> str:
+    """type 以外のキーを持つ境界条件（freestream 等）。"""
+    lines = [f"    {name}", "    {"]
+    lines.append(f"        type            {bc_type};")
+    for key, val in extra.items():
+        lines.append(f"        {key}            {val};")
+    lines.append("    }")
+    return "\n".join(lines)
+
+
+def decompose_simple_grid(n_procs: int) -> tuple[int, int, int]:
+    """nProcs に近い simple 分割 (x 優先)。"""
+    grids = {
+        1: (1, 1, 1),
+        2: (2, 1, 1),
+        3: (3, 1, 1),
+        4: (2, 2, 1),
+        6: (3, 2, 1),
+        8: (2, 2, 2),
+        12: (3, 2, 2),
+    }
+    if n_procs in grids:
+        return grids[n_procs]
+    # フォールバック: x 方向に可能な限り分割
+    nx = min(n_procs, 4)
+    ny = max(1, n_procs // nx)
+    return (nx, ny, 1)
+
+
+def build_decompose_par_dict(n_procs: int) -> str:
+    nx, ny, nz = decompose_simple_grid(n_procs)
+    return f"""{FOAM_HEADER}
+    class       dictionary;
+    object      decomposeParDict;
+}}
+numberOfSubdomains {n_procs};
+method          simple;
+simpleCoeffs
+{{
+    n               ({nx} {ny} {nz});
+    order           xyz;
+}}
+"""
+
+
 def build_transport_properties(spec: SimulationSpec) -> str:
     return f"""{FOAM_HEADER}
     class       dictionary;
@@ -195,13 +244,13 @@ def build_u_field(spec: SimulationSpec, patch_names: list[str]) -> str:
         ]
     if spec.case_type == "cylinder_2d_ogrid":
         for name, bc in [
-            ("top", "symmetryPlane"),
-            ("bottom", "symmetryPlane"),
-            ("frontAndBack", "empty"),
-            ("cylinder", "noSlip"),
+            ("top", _patch_simple("top", "slip")),
+            ("bottom", _patch_simple("bottom", "slip")),
+            ("frontAndBack", _patch_simple("frontAndBack", "empty")),
+            ("cylinder", _patch_simple("cylinder", "noSlip")),
         ]:
             if name in patches:
-                lines.append(f"    {name} {{ type {bc}; }}")
+                lines.append(bc)
     elif spec.dimensions == 2:
         for name, bc in [("top", "noSlip"), ("bottom", "noSlip"), ("front", "empty"), ("back", "empty")]:
             if name in patches:
@@ -232,11 +281,13 @@ def build_p_field(spec: SimulationSpec, patch_names: list[str]) -> str:
         lines += ["    inlet { type zeroGradient; }", "    outlet { type fixedValue; value uniform 0; }"]
     if spec.case_type == "cylinder_2d_ogrid":
         for name, bc in [
-            ("top", "symmetryPlane"), ("bottom", "symmetryPlane"),
-            ("frontAndBack", "empty"), ("cylinder", "zeroGradient"),
+            ("top", _patch_simple("top", "zeroGradient")),
+            ("bottom", _patch_simple("bottom", "zeroGradient")),
+            ("frontAndBack", _patch_simple("frontAndBack", "empty")),
+            ("cylinder", _patch_simple("cylinder", "zeroGradient")),
         ]:
             if name in patches:
-                lines.append(f"    {name} {{ type {bc}; }}")
+                lines.append(bc)
     else:
         for name in patches:
             if name in ("inlet", "outlet"):
@@ -248,18 +299,19 @@ def build_p_field(spec: SimulationSpec, patch_names: list[str]) -> str:
 
 
 def build_set_fields_dict(spec: SimulationSpec) -> str:
+    """円柱後流に小さな非対称摂動を与え、渦列分岐を促す（OpenFOAM vortexShed 準拠）。"""
     r = (spec.characteristic_length or 1.0) / 2.0
-    wake_x0 = round(r * 1.05, 4)
-    wake_x1 = round(r * 6.0, 4)
-    wake_y = round(r * 2.0, 4)
-    pv = round(spec.inlet_velocity * 0.05, 6)
+    x0 = round(r * 1.05, 4)
+    x1 = round(r * 1.25, 4)
+    y0 = round(r * 0.05, 4)
+    y1 = round(r * 0.35, 4)
+    pv = round(spec.inlet_velocity * 0.01, 6)
     u = spec.inlet_velocity
     depth = 0.01
     return f"""FoamFile {{ version 2.0; format ascii; class dictionary; object setFieldsDict; }}
 defaultFieldValues ( volVectorFieldValue U ({u:g} 0 0) );
 regions
 (
-    boxToCell {{ box ({wake_x0} -{wake_y} 0) ({wake_x1} 0 {depth}); fieldValues ( volVectorFieldValue U ({u:g} {pv} 0) ); }}
-    boxToCell {{ box ({wake_x0} 0 0) ({wake_x1} {wake_y} {depth}); fieldValues ( volVectorFieldValue U ({u:g} {-pv} 0) ); }}
+    boxToCell {{ box ({x0} {y0} 0) ({x1} {y1} {depth}); fieldValues ( volVectorFieldValue U ({u:g} {pv} 0) ); }}
 );
 """

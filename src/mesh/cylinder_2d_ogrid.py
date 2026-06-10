@@ -65,8 +65,8 @@ def generate(
     境界パッチ:
       inlet    : x = x_in   (type patch)
       outlet   : x = x_out  (type patch)
-      top      : y = y_max  (type symmetryPlane)
-      bottom   : y = y_min  (type symmetryPlane)
+      top      : y = y_max  (type patch — slip BC in 0/U)
+      bottom   : y = y_min  (type patch — slip BC in 0/U)
       cylinder : 円柱面      (type wall)
       frontAndBack: ±z 面   (type empty, defaultPatch 扱い)
     """
@@ -254,7 +254,7 @@ def generate(
     bnd += [
         "    top",
         "    {",
-        "        type    symmetryPlane;",
+        "        type    patch;",
         "        faces",
         "        (",
         qf(6, 7),
@@ -267,7 +267,7 @@ def generate(
     bnd += [
         "    bottom",
         "    {",
-        "        type    symmetryPlane;",
+        "        type    patch;",
         "        faces",
         "        (",
         qf(0, 1),

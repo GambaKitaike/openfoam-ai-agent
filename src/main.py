@@ -3,6 +3,12 @@ OpenFOAM AI Agent - メインエントリポイント
 4-Agent Pipeline: Pre-processing → RAG → OpenFOAMGPT → Post-processing
 """
 import sys
+from pathlib import Path
+
+if __name__ == "__main__" and not __package__:
+    _ROOT = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(_ROOT))
+    __package__ = "src"
 
 import typer
 from rich.console import Console
@@ -30,6 +36,22 @@ def run(
         "--interactive/--no-interactive",
         help="未指定パラメータを対話で確認 (デフォルト: TTYなら対話)",
     ),
+    parallel: bool = typer.Option(
+        False,
+        "--parallel",
+        help="mpirun による並列ソルバー実行 (decomposePar → reconstructPar)",
+    ),
+    n_procs: int = typer.Option(
+        4,
+        "--np",
+        min=2,
+        help="並列プロセス数 (--parallel 時)",
+    ),
+    demo: bool = typer.Option(
+        False,
+        "--demo",
+        help="短時間デモ設定 (カルマン渦: 25周期→5周期)。GIF/プレビュー向け",
+    ),
 ):
     """
     【フルパイプライン】自然言語から後処理まで4エージェントが全工程を自動実行します。
@@ -46,6 +68,9 @@ def run(
         convergence_threshold=threshold,
         stl_path=stl_file,
         interactive=use_interactive,
+        parallel=parallel,
+        n_procs=n_procs,
+        demo=demo,
     )
 
 

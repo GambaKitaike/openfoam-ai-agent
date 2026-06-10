@@ -15,6 +15,10 @@ dependencies = [
 [project.scripts]
 openfoam-agent = "src.main:app"
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
 [build-system]
 requires = ["setuptools>=70"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"

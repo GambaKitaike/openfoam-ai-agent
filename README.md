@@ -13,54 +13,40 @@ ParaView で保存した **Uy**（y 方向速度）アニメーション:
 
 ---
 
-## 現状の機能（2026-06）
+## プロジェクト全体の現状（2026-06）
 
-| レイヤ | 内容 |
-|--------|------|
-| **Agent①** | 自然言語 → draft `SimulationSpec` |
-| **Agent① ↔ Agent②** | 内部ループ（充足 → `review_spec` → 修正、最大 3 ラウンド）。`--no-interactive` でも Agent 間レビューは動作 |
-| **Agent②** | ケース単位 RAG + **RequirementProfile** + **match_score**（fast path / staged ルート判定） |
-| **Agent③** | **fast path**（高一致参照ケースコピー）または **段階的生成**（Policy + Python builders + mesh）→ 実行・自己修正 |
-| **Agent④** | 残差・物理妥当性チェック → レポート & ParaView パス |
+### 何ができるか
 
-### 主な変更点（staged case builder 移行）
+| フェーズ | 内容 |
+|---------|------|
+| **入力** | 日本語で解析内容を説明（Re・ソルバー・層流/乱流など） |
+| **仕様化** | Agent① が `SimulationSpec` を抽出 → Agent② が要件充足・物理レビュー（最大 3 ラウンド） |
+| **ケース選定** | ケース単位 RAG + `match_score` で参照ケース fast path / 段階生成 staged path を自動選択 |
+| **生成** | OpenFOAM 辞書を Python builders で決定的生成（Jinja 不使用） |
+| **実行** | blockMesh → setFields → pimpleFoam/simpleFoam（**MPI 並列対応**）→ エラー時 LLM 自己修正 |
+| **後処理** | 残差・Re 整合チェック → `report.md` → ParaView パス案内 |
 
-- **Jinja テンプレート (`templates/*.j2`) を廃止** — OpenFOAM 辞書は `src/case_builder/builders.py` と Python メッシュ生成器で決定的に生成
-- **Agent② レビューループ** — Re と乱流モデルの矛盾などを Agent 間で検出・修正（層流指定時は U を下げる選択肢も提示）
-- **カルマン渦 (Re≈1000)** — O-グリッド + `pimpleFoam` + 上下 `slip` BC + 後流摂動で非定常渦列を確認（[デモ GIF](docs/demo/karman_re1000.gif)）
-- **`test-agents` CLI** — ソルバー実行なしで Agent 間通信を可視化
+### 検証済み解析
 
-### ケース単位 RAG
+| ケース | 条件 | 結果 |
+|--------|------|------|
+| **カルマン渦 Re=1000** | O-グリッド, `pimpleFoam`, slip BC, t=125 s | Uy の時間振動を確認（渦列アニメーション可） |
+| チャネル流 | `simpleFoam`, box channel | 定常収束 |
+| 翼・外部流 | snappyHexMesh + STL | メッシュ生成〜ソルバー（ケース依存） |
 
-- 1 チュートリアル = 1 ドキュメント（ChromaDB `openfoam_cases`）
-- LLM 生成 **intent**（`title_ja`, `summary_ja`, `phenomenon`, `suitable_for_ja` …）を `build-index` 時に付与
-- ハードフィルタ（solver / 定常 / 2D / phenomenon / mesh_prebuilt 等）+ ベクトル検索
-- **match_score ≥ 0.8** → fast path（`CaseApplier` で参照ケースをコピー＋スカラー置換）
-- 一致度が低い / 参照なし → **staged path**（段階的生成パイプライン）
-- **mesh_prebuilt** ケース（例: `airFoil2D`）は polyMesh をコピーし blockMesh をスキップ
+### 直近の主要変更
 
-### 対話・非対話
-
-| モード | 挙動 |
-|--------|------|
-| **対話（TTY デフォルト）** | Agent② の指摘をユーザーにも確認。参照ケース典型値（Phase A）も確認可 |
-| **`--no-interactive`** | Agent② が自動修正（説明文で明示した値は `user_locked` で維持） |
-
-```bash
-# 対話 ON
-python -m src.main run "2D翼周りの定常流れ simpleFoam" -o ./output/airfoil
-
-# 非対話（CI / バッチ）
-python -m src.main run "2D円柱 Re=100 カルマン渦" -o ./output/karman --no-interactive
-
-# Agent 間通信テスト（ソルバー実行なし）
-python -m src.main test-agents --all --offline --no-interactive
-python -m src.main test-agents -s channel_conflict --offline
-```
+- **Jinja 廃止** — `src/case_builder/builders.py` + Python メッシュ生成器で OpenFOAM 辞書を決定的生成
+- **Agent① ↔ Agent② レビューループ** — Re/乱流/ソルバー矛盾を Agent 間で検出・修正
+- **カルマン渦 BC 修正** — 上下 `symmetryPlane` / `freestream` → **`slip` / `zeroGradient`**（OpenFOAM vortexShed 準拠）
+- **setFields 摂動** — 円柱後流に小さな非対称 perturbation（渦列分岐用）
+- **MPI 並列** — `--parallel --np N`（decomposePar → mpirun → reconstructPar）
+- **デモモード** — `--demo`（カルマン: 25 周期 → 5 周期、プレビュー向け）
+- **CLI 改善** — `pip install -e .` で `openfoam-agent` コマンド、`src/` からの `python main.py` も可
 
 ---
 
-## アーキテクチャ
+## 4-Agent アーキテクチャ
 
 ```
 自然言語
@@ -68,8 +54,8 @@ python -m src.main test-agents -s channel_conflict --offline
 [Agent①] extract                 → draft SimulationSpec
     ↓
 [Agent① ↔ Agent②] 内部ループ
-    Agent② RequirementProfile     → 未充足項目の補完
-    Agent② review_spec            → 物理整合性レビュー（Re/乱流/ソルバー等）
+    RequirementProfile            → 未充足項目の補完
+    review_spec                   → 物理整合性レビュー（Re/乱流/ソルバー等）
     ↓
 [Agent②] Reference Match         → match_score → fast path or staged
     ↓                            └ Phase A: 参照ケース典型条件の確認（対話時）
@@ -81,15 +67,45 @@ python -m src.main test-agents -s channel_conflict --offline
 [Agent④] Post-processing         → レポート & ParaView 案内
 ```
 
-### 段階的生成（経路 B）の構成
+### 段階的生成（経路 B）
 
 | モジュール | 役割 |
 |-----------|------|
 | `case_builder/policy.py` | ソルバー選択、Re 整合、時間刻み（カルマンは Strouhal ベース） |
-| `case_builder/builders.py` | controlDict, fvSchemes, fvSolution, 0/ 等の決定的生成 |
+| `case_builder/builders.py` | controlDict, fvSchemes, fvSolution, 0/, decomposeParDict 等 |
 | `case_builder/mesh_generators.py` | 汎用 box channel メッシュ |
-| `mesh/cylinder_2d_ogrid.py` | カルマン渦用 O-グリッド |
+| `mesh/cylinder_2d_ogrid.py` | カルマン渦用 O-グリッド blockMeshDict |
 | `case_builder/pipeline.py` | 上記を順番に実行・検証 |
+
+### ケース単位 RAG
+
+- 1 チュートリアル = 1 ドキュメント（ChromaDB `openfoam_cases`）
+- LLM 生成 **intent**（`title_ja`, `summary_ja`, `phenomenon` …）を `build-index` 時に付与
+- ハードフィルタ + ベクトル検索 → **match_score ≥ 0.8** で fast path
+- 一致度が低い / 参照なし → staged path（段階的生成）
+
+---
+
+## カルマン渦ケースの設定
+
+### 計算域・メッシュ（D=1 m の例）
+
+| パッチ | 位置 | BC（U / p） |
+|--------|------|-------------|
+| **inlet** | x = −8 m（左端） | fixedValue (U,0,0) / zeroGradient |
+| **outlet** | x = +20 m（右端） | zeroGradient / fixedValue 0 |
+| **top / bottom** | y = ±10 m | **slip** / zeroGradient |
+| **cylinder** | 中心 (0,0), r=0.5 m | noSlip / zeroGradient |
+| **frontAndBack** | z = 0〜0.01 m | empty |
+
+- 流入方向: **+x**（左 → 右）
+- Re = U·D/ν（例: U=1, D=1, ν=0.001 → Re=1000）
+
+### 時間設定（policy 自動計算）
+
+- 渦周期 T ≈ D / (0.2·U) = 5 s（U=1, D=1）
+- 通常: endTime = 25 周期 = **125 s**, writeInterval = T/20
+- `--demo`: endTime = 5 周期 = **25 s**
 
 ---
 
@@ -97,21 +113,61 @@ python -m src.main test-agents -s channel_conflict --offline
 
 ```bash
 cd ~/openfoam-ai-agent
-bash setup.sh                 # 初回
-source venv/bin/activate      # 必須
+bash setup.sh                 # venv + pip install -e .
+source venv/bin/activate
 
 cp .env.example .env          # OPENAI_API_KEY を設定
 
-# RAG インデックス（初回: intent LLM 生成あり / 2 回目以降はキャッシュ）
+# RAG インデックス（初回）
 python -m src.main build-index --no-web
 
-# 実行例
-python -m src.main run "2D円柱周りのカルマン渦 Re=100 層流" -o ./output/karman --no-interactive
-python -m src.main run "2D翼周りの定常流れ simpleFoam" -o ./output/airfoil
+# カルマン渦 Re=1000（非対話・MPI 4 並列）
+python -m src.main run \
+  "2D円柱周りのカルマン渦 Re=1000 層流 流入速度1m/s" \
+  -o ./output/karman_re1000 \
+  --no-interactive --parallel --np 4
 
-# Agent 通信テスト
-python -m src.main test-agents --all --offline
+# 短時間プレビュー（5 周期 = 25 s）
+python -m src.main run \
+  "2D円柱 Re=1000 カルマン渦" \
+  -o ./output/karman_demo --no-interactive --demo
+
+# Agent 通信テスト（ソルバー実行なし）
+python -m src.main test-agents --all --offline --no-interactive
 ```
+
+> **注意:** コマンドはプロジェクトルート（`~/openfoam-ai-agent`）から実行してください。  
+> `pip install -e .` 後は `openfoam-agent run ...` も使えます。
+
+---
+
+## CLI コマンド
+
+| コマンド | 説明 |
+|---------|------|
+| `run` | フルパイプライン（生成 → メッシュ → ソルバー → レポート） |
+| `build-index` | チュートリアル RAG インデックス構築 |
+| `test-agents` | Agent 間通信テスト（`--offline` / `--all`） |
+| `check` | 既存ケースの AI レビュー |
+
+### `run` オプション
+
+| フラグ | 説明 |
+|--------|------|
+| `-o`, `--output` | 出力先ディレクトリ |
+| `--no-interactive` | Agent② 自動修正（バッチ/CI 向け） |
+| `--parallel` | MPI 並列実行（decomposePar → mpirun → reconstructPar） |
+| `--np N` | 並列プロセス数（デフォルト 4） |
+| `--demo` | 短時間デモ（カルマン: 5 周期） |
+| `--threshold` | 収束残差閾値 |
+| `--stl` | snappyHexMesh 用 STL パス |
+
+### 対話・非対話
+
+| モード | 挙動 |
+|--------|------|
+| **対話（TTY デフォルト）** | Agent② の指摘をユーザーにも確認 |
+| **`--no-interactive`** | Agent② が自動修正（明示した値は `user_locked` で維持） |
 
 ---
 
@@ -120,31 +176,54 @@ python -m src.main test-agents --all --offline
 ```
 openfoam-ai-agent/
 ├── src/
-│   ├── main.py                      CLI（run / build-index / test-agents / check）
-│   ├── models.py                    SimulationSpec, RequirementProfile, ReferenceMatch
+│   ├── main.py                      CLI エントリポイント
 │   ├── orchestrator.py              4-Agent パイプライン
-│   ├── agent_dialogue.py            Agent 間通信トレース（test-agents 用）
-│   ├── case_builder/                段階的生成（pipeline, builders, policy, mesh）
+│   ├── agent_dialogue.py            Agent 間通信トレース（test-agents）
+│   ├── case_builder/                段階的生成（pipeline, builders, policy）
 │   ├── case_applier.py              fast path: 参照ケース適用
-│   ├── rag/
-│   │   ├── requirement_profile.py   現象別要件 + review_spec
-│   │   ├── match_score.py           fast path 閾値判定
-│   │   ├── reference_case_params.py 参照ケース典型条件抽出
-│   │   ├── case_selector.py         ハードフィルタ + ベクトル検索
-│   │   └── retriever.py             Agent② RAG 入口
-│   └── agents/
-│       ├── preprocessing.py         Agent①
-│       ├── spec_clarification.py    ヒアリング + Agent② レビューループ
-│       ├── prompt_generation.py     Agent②
-│       ├── openfoam_gpt.py          Agent③
-│       └── postprocessing.py        Agent④
-├── docs/
-│   └── demo/
-│       └── karman_re1000.gif          カルマン渦デモアニメーション
+│   ├── mesh/cylinder_2d_ogrid.py   O-グリッド blockMeshDict 生成
+│   ├── runner.py                    OpenFOAM 実行（MPI 対応）
+│   ├── rag/                         ケース単位 RAG
+│   └── agents/                      Agent①〜④
+├── docs/demo/
+│   └── karman_re1000.gif            カルマン渦 Uy デモアニメーション
 ├── knowledge_base/
 │   ├── case_intents/                intent JSON キャッシュ
 │   └── chroma_db/                   ベクトル DB（.gitignore）
-└── tests/                           pytest（builders, policy, pipeline, agent_dialogue 等）
+├── output/                          実行結果（.gitignore）
+└── tests/                           pytest（20 ファイル）
+```
+
+---
+
+## 対応 case_type
+
+| `case_type` | 説明 |
+|-------------|------|
+| `channel_2d` / `channel_3d` | 壁あり内部流れ |
+| `cylinder_2d_ogrid` | O-グリッド円柱（カルマン渦、STL 不要） |
+| `snappy_2d` / `external_snappy` | STL + snappyHexMesh |
+
+---
+
+## ParaView（WSL → Windows）
+
+```bash
+touch output/karman_re1000/pimpleFoam_cylinder_2d_ogrid/pimpleFoam_cylinder_2d_ogrid.foam
+```
+
+Windows エクスプローラー:
+
+```
+\\wsl.localhost\Ubuntu-24.04\home\<user>\openfoam-ai-agent\output\<case>\<case>.foam
+```
+
+並列計算後は全タイムステップを復元してから可視化:
+
+```bash
+cd output/<case>
+reconstructPar
+foamToVTK
 ```
 
 ---
@@ -160,61 +239,16 @@ openfoam-ai-agent/
 
 ---
 
-## CLI コマンド
-
-| コマンド | 説明 |
-|---------|------|
-| `run` | フルパイプライン（生成 → メッシュ → ソルバー → レポート） |
-| `build-index` | チュートリアル RAG インデックス構築 |
-| `test-agents` | Agent 間通信テスト（`--offline` で LLM なし、`--all` で全シナリオ） |
-| `check` | 既存ケースの AI レビュー |
-
-### build-index オプション
-
-| フラグ | 説明 |
-|--------|------|
-| `--no-web` | Web スクレイピングをスキップ |
-| `--skip-enrich` | LLM intent 生成をスキップ |
-| `--enrich-only` | Chroma 化せず intent 生成のみ |
-| `--force-enrich` | キャッシュ無視で intent 再生成 |
-
----
-
-## 対応 case_type（staged フォールバック）
-
-| `case_type` | 説明 |
-|-------------|------|
-| `channel_2d` / `channel_3d` | 壁あり内部流れ |
-| `cylinder_2d_ogrid` | O-グリッド円柱（カルマン渦、STL 不要） |
-| `snappy_2d` / `external_snappy` | STL + snappyHexMesh |
-
-RAG で参照ケースが選ばれた場合は fast path または参照ファイル adapt を優先します。
-
----
-
-## ParaView（WSL → Windows）
-
-ケースディレクトリに `.foam` を置いて開きます。
-
-```bash
-touch output/karman/pimpleFoam_cylinder_2d_ogrid/pimpleFoam_cylinder_2d_ogrid.foam
-paraview output/karman/pimpleFoam_cylinder_2d_ogrid/pimpleFoam_cylinder_2d_ogrid.foam
-```
-
-Windows 側からは UNC パスでも可:
-
-```
-\\wsl.localhost\Ubuntu-24.04\home\<user>\openfoam-ai-agent\output\<case>\<case>.foam
-```
-
----
-
 ## ロードマップ
 
-- **実装済** — staged case builder（Jinja 廃止）、Agent①↔Agent② レビューループ、カルマン O-grid、`test-agents`
-- **次** — Agent② がチュートリアル典型値をプロファイル／レビューの主入力に（`similar_case_ids` 活用）
-- **次** — Agent③ → Agent② `get_file_guidance()`（ファイル単位 syntax 問い合わせ）
-- **将来** — 1 ケースを会話で incremental に編集（Cursor 的 diff）
+| 状態 | 内容 |
+|------|------|
+| ✅ 完了 | staged case builder（Jinja 廃止）、Agent①↔Agent② レビューループ |
+| ✅ 完了 | カルマン O-grid、slip BC、MPI 並列、`--demo`、`test-agents` |
+| ✅ 完了 | Re=1000 カルマン渦デモ（README GIF） |
+| 🔜 次 | Agent② がチュートリアル典型値をプロファイル主入力に（`similar_case_ids` 活用） |
+| 🔜 次 | Agent③ → Agent② `get_file_guidance()`（ファイル単位 syntax 問い合わせ） |
+| 📋 将来 | 1 ケースを会話で incremental に編集（Cursor 的 diff） |
 
 ---
 

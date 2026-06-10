@@ -62,6 +62,8 @@ class OpenFOAMGPTAgent:
         output_dir: str,
         convergence_threshold: float = 1e-4,
         reference_match: ReferenceMatch | None = None,
+        parallel: bool = False,
+        n_procs: int = 4,
     ) -> CaseArtifacts:
         """
         EnrichedContext からケースを生成・実行し CaseArtifacts を返す。
@@ -187,7 +189,9 @@ class OpenFOAMGPTAgent:
             case_dir=case_dir,
             command=spec.solver,
             run_fn=lambda: monitor.watch(
-                solver_result_fn=lambda: self.runner.run_solver(case_dir, spec.solver)
+                solver_result_fn=lambda: self.runner.run_solver(
+                    case_dir, spec.solver, parallel=parallel, n_procs=n_procs
+                )
             ),
             fix_fn=lambda err, _: self._fix_solver_settings(err, case_dir, context),
         )

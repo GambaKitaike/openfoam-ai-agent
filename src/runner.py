@@ -199,20 +199,35 @@ class OpenFOAMRunner:
             log_file=str(log_path),
         )
 
+    def _ensure_decompose_par_dict(self, case_dir: str, n_procs: int) -> None:
+        from .case_builder.builders import build_decompose_par_dict
+
+        path = Path(case_dir) / "system" / "decomposeParDict"
+        path.write_text(build_decompose_par_dict(n_procs))
+
     def run_solver(self, case_dir: str, solver: str, parallel: bool = False, n_procs: int = 4) -> RunResult:
         """
         OpenFOAMソルバーを実行する。
+        parallel=True のとき decomposePar → mpirun → reconstructPar を行う。
         """
         log_path = Path(case_dir) / f"log.{solver}"
 
         if parallel:
-            cmd = f"decomposePar -case {case_dir} && mpirun -np {n_procs} {solver} -case {case_dir} -parallel 2>&1 | tee {log_path}"
+            self._ensure_decompose_par_dict(case_dir, n_procs)
+            console.print(
+                f"[cyan]  → {solver} を {n_procs} 並列で実行 (mpirun)[/cyan]"
+            )
+            cmd = (
+                f"set -o pipefail; "
+                f"decomposePar -case {case_dir} -time '0' -force > {case_dir}/log.decomposePar 2>&1 && "
+                f"mpirun -np {n_procs} {solver} -case {case_dir} -parallel 2>&1 | tee {log_path} && "
+                f"reconstructPar -case {case_dir} -latestTime > {case_dir}/log.reconstructPar 2>&1"
+            )
         else:
+            console.print(f"[cyan]  → {solver} を実行中 (ログ: {log_path})[/cyan]")
             cmd = f"set -o pipefail; {solver} -case {case_dir} 2>&1 | tee {log_path}"
 
         cmd_str = _of_command(cmd, self.settings)
-
-        console.print(f"[cyan]  → {solver} を実行中 (ログ: {log_path})[/cyan]")
         result = subprocess.run(cmd_str, shell=True, capture_output=True, text=True)
         stdout = log_path.read_text() if log_path.exists() else result.stdout
 
