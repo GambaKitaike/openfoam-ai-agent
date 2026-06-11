@@ -50,7 +50,13 @@ def run(
     demo: bool = typer.Option(
         False,
         "--demo",
-        help="短時間デモ設定 (カルマン渦: 25周期→5周期)。GIF/プレビュー向け",
+        help="短時間デモ設定 (カルマン渦: 5周期)。--periods 未指定時のみ",
+    ),
+    periods: int | None = typer.Option(
+        None,
+        "--periods",
+        min=1,
+        help="カルマン渦の放出周期数 (本番=25, デモ=5)。指定時は --demo より優先",
     ),
 ):
     """
@@ -71,6 +77,7 @@ def run(
         parallel=parallel,
         n_procs=n_procs,
         demo=demo,
+        periods=periods,
     )
 
 
@@ -201,6 +208,104 @@ def test_agents(
         include_reference_match=not skip_match,
         offline=offline,
         scenario=scenario_key,
+    )
+
+
+@app.command("continue-run")
+def continue_run(
+    case_dir: str = typer.Argument(..., help="続行する OpenFOAM ケースディレクトリ"),
+    end_time: float = typer.Option(..., "--end-time", "-e", help="新しい endTime [s]"),
+    write_interval: float = typer.Option(
+        None, "--write-interval", "-w", help="writeInterval [s]（省略時は変更なし）"
+    ),
+    n_procs: int = typer.Option(4, "--np", min=2, help="MPI プロセス数"),
+    no_vtk: bool = typer.Option(False, "--no-vtk", help="foamToVTK をスキップ"),
+):
+    """
+    既存ケースを latestTime から endTime まで並列再開する。
+
+    例: python -m src.main continue-run ./output/karman_re1000/pimpleFoam_cylinder_2d_ogrid -e 200 --np 4
+    """
+    from pathlib import Path
+    from .case_runtime import find_latest_time, read_end_time
+    from .runner import OpenFOAMRunner
+
+    case_path = Path(case_dir).resolve()
+    if not (case_path / "system" / "controlDict").exists():
+        console.print(f"[red]エラー: OpenFOAM ケースが見つかりません: {case_path}[/red]")
+        raise typer.Exit(1)
+
+    latest = find_latest_time(case_path)
+    current_end = read_end_time(case_path)
+    if latest is None:
+        console.print("[red]エラー: タイムディレクトリがありません[/red]")
+        raise typer.Exit(1)
+    if end_time <= latest:
+        console.print(
+            f"[red]エラー: --end-time ({end_time}) は最新時刻 ({latest}) より大きくしてください[/red]"
+        )
+        raise typer.Exit(1)
+
+    console.print(
+        f"[bold]計算続行[/bold]  t={latest:g} → endTime={end_time:g}"
+        + (f" (現在 endTime={current_end:g})" if current_end else "")
+    )
+
+    settings = Settings()
+    runner = OpenFOAMRunner(settings)
+    result = runner.run_continue_solver(
+        str(case_path),
+        end_time,
+        n_procs=n_procs,
+        write_interval=write_interval,
+    )
+    if not result.success:
+        console.print(f"[red]ソルバーが失敗しました (log: {result.log_file})[/red]")
+        raise typer.Exit(1)
+
+    if not no_vtk:
+        runner.run_foam_to_vtk(str(case_path))
+
+    n_times = len(list(case_path.glob("[0-9]*")))
+    console.print(f"[bold green]完了[/bold green]  タイムディレクトリ数: {n_times}")
+
+
+@app.command()
+def reconstruct(
+    case_dir: str = typer.Argument(..., help="復元する OpenFOAM ケースディレクトリ"),
+    latest_only: bool = typer.Option(
+        False, "--latest-only", help="最新タイムステップのみ復元（デフォルト: 全タイムステップ）"
+    ),
+    vtk: bool = typer.Option(True, "--vtk/--no-vtk", help="復元後に foamToVTK を実行"),
+):
+    """
+    並列計算後の processor* から reconstructPar でタイムステップを復元する。
+
+    例: python -m src.main reconstruct ./output/karman_re1000/pimpleFoam_cylinder_2d_ogrid
+    """
+    from pathlib import Path
+    from .case_runtime import has_processor_dirs, list_time_dirs
+    from .runner import OpenFOAMRunner
+
+    case_path = Path(case_dir).resolve()
+    if not has_processor_dirs(case_path):
+        console.print("[yellow]processor* がありません — スキップ[/yellow]")
+    else:
+        settings = Settings()
+        runner = OpenFOAMRunner(settings)
+        result = runner.run_reconstruct_par(str(case_path), latest_only=latest_only)
+        if not result.success:
+            console.print(f"[red]reconstructPar 失敗 (log: {result.log_file})[/red]")
+            raise typer.Exit(1)
+
+    if vtk:
+        settings = Settings()
+        OpenFOAMRunner(settings).run_foam_to_vtk(str(case_path))
+
+    times = list_time_dirs(case_path)
+    console.print(
+        f"[bold green]完了[/bold green]  ルートのタイムディレクトリ: {len(times)} "
+        f"(t={times[0]:g} … {times[-1]:g})" if times else "[bold green]完了[/bold green]"
     )
 
 

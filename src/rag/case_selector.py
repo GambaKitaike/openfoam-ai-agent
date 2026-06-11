@@ -251,3 +251,63 @@ class CaseSelector:
             if len(matched) >= limit:
                 break
         return matched
+
+    def list_similar_cases(
+        self,
+        spec: SimulationSpec,
+        limit: int = 3,
+        exclude_case_ids: list[str] | None = None,
+    ) -> list[dict]:
+        """Embedding 類似度順にフィルタ通過ケースを返す（Agent② プロファイル用）。"""
+        if not self.is_available:
+            return []
+
+        exclude = set(exclude_case_ids or [])
+        query = self._build_query(spec)
+        embedding = self._embed(query)
+        n_candidates = min(max(limit * 5, 10), self.collection.count())
+
+        try:
+            results = self.collection.query(
+                query_embeddings=[embedding],
+                n_results=n_candidates,
+                include=["metadatas", "distances"],
+            )
+        except Exception as e:
+            console.print(f"[yellow]  類似ケース検索エラー: {e}[/yellow]")
+            return self.list_cases_matching(spec, limit=limit)
+
+        metas = results["metadatas"][0] if results["metadatas"] else []
+        dists = results["distances"][0] if results["distances"] else []
+        matched: list[dict] = []
+
+        for meta, dist in zip(metas, dists):
+            case_id = meta.get("case_id", "")
+            if case_id in exclude:
+                continue
+            if not self._passes_hard_filter(spec, meta):
+                continue
+            if dist > 0.85:
+                continue
+
+            case_path = meta.get("case_path", "")
+            if not case_path or not Path(case_path).exists():
+                continue
+
+            reference_files = load_case_files(case_path)
+            if len(reference_files) < 3:
+                continue
+
+            matched.append({
+                "case_id": case_id,
+                "case_path": case_path,
+                "reference_files": reference_files,
+                "metadata": meta,
+                "distance": dist,
+                "title_ja": meta.get("title_ja", ""),
+                "summary_ja": meta.get("summary_ja", ""),
+            })
+            if len(matched) >= limit:
+                break
+
+        return matched

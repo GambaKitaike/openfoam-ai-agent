@@ -56,12 +56,27 @@ class RequirementField:
 
 
 @dataclass
+class ReferenceHint:
+    """類似チュートリアルから抽出した典型パラメータ（Agent② プロファイル用）。"""
+    case_id: str = ""
+    title_ja: str = ""
+    inlet_velocity: float | None = None
+    nu: float | None = None
+    turbulence_model: str = ""
+    solver: str = ""
+    steady_state: bool | None = None
+    characteristic_length: float | None = None
+    re_number: float | None = None
+
+
+@dataclass
 class RequirementProfile:
     """現象・ケースタイプに応じた必要十分条件。"""
     phenomenon: str
     fields: list[RequirementField] = field(default_factory=list)
     constraints: list[str] = field(default_factory=list)
     similar_case_ids: list[str] = field(default_factory=list)
+    reference_hints: list[ReferenceHint] = field(default_factory=list)
 
 
 @dataclass

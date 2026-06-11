@@ -331,6 +331,26 @@ def clarify_with_profile(
         _recalc_re(spec)
         return spec
 
+    if profile.reference_hints:
+        hint_lines = []
+        for hint in profile.reference_hints[:2]:
+            parts = []
+            if hint.inlet_velocity is not None:
+                parts.append(f"U={hint.inlet_velocity:g}")
+            if hint.nu is not None:
+                parts.append(f"nu={hint.nu:g}")
+            if hint.turbulence_model:
+                parts.append(hint.turbulence_model)
+            if parts:
+                label = hint.title_ja or hint.case_id.split("/")[-1]
+                hint_lines.append(f"  {label}: {', '.join(parts)}")
+        if hint_lines:
+            console.print(
+                "[dim]類似チュートリアル典型値:\n"
+                + "\n".join(hint_lines)
+                + "[/dim]"
+            )
+
     if not interactive:
         console.print(
             f"  [dim]要件プロファイル {len(fields)} 件 — 推奨値を自動適用[/dim]"

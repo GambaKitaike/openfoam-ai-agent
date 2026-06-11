@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from ..llm_client import LLMClient
@@ -29,8 +30,13 @@ LLM_SYSTEM = """OpenFOAM v2512 のケースファイルを1つだけ生成して
 
 
 class FileGenerator:
-    def __init__(self, llm: LLMClient | None = None):
+    def __init__(
+        self,
+        llm: LLMClient | None = None,
+        guidance_fn: Callable[[str, SimulationSpec, list[str] | None], str] | None = None,
+    ):
         self.llm = llm
+        self.guidance_fn = guidance_fn
 
     def generate(
         self,
@@ -53,8 +59,11 @@ class FileGenerator:
         if rel_path == "system/setFieldsDict":
             return builders.build_set_fields_dict(spec)
 
-        if self.llm and ref:
-            return self._llm_generate(rel_path, spec, ref, patch_names)
+        if self.llm and (ref or self.guidance_fn):
+            guidance = ""
+            if self.guidance_fn:
+                guidance = self.guidance_fn(rel_path, spec, patch_names)
+            return self._llm_generate(rel_path, spec, ref, patch_names, guidance)
 
         raise ValueError(f"No builder for {rel_path}")
 
@@ -86,16 +95,23 @@ class FileGenerator:
         return ref
 
     def _llm_generate(
-        self, rel_path: str, spec: SimulationSpec, ref: str, patch_names: list[str] | None
+        self,
+        rel_path: str,
+        spec: SimulationSpec,
+        ref: str,
+        patch_names: list[str] | None,
+        guidance: str = "",
     ) -> str:
+        ref_block = ref[:4000] if ref else "(参照ファイルなし — ガイダンスに従う)"
+        guidance_block = f"\n\nAgent② ガイダンス:\n{guidance}\n" if guidance else ""
         prompt = f"""ファイル: {rel_path}
 解析: {spec.description}
 ソルバー: {spec.solver}, 定常: {spec.steady_state}, 乱流: {spec.turbulence_model}
 U={spec.inlet_velocity}, nu={spec.nu}, L={spec.characteristic_length}
 パッチ: {patch_names or []}
-
+{guidance_block}
 参照例:
-{ref[:4000]}
+{ref_block}
 
 上記を参考に完全なファイル内容のみ出力してください。"""
         return self.llm.chat(prompt, system=LLM_SYSTEM)

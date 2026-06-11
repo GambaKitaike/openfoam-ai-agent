@@ -198,6 +198,7 @@ class PostprocessingAgent:
         """foamToVTK を実行してVTKファイルを生成する。"""
         from ..runner import OpenFOAMRunner
         runner = OpenFOAMRunner(self.settings)
+        runner.ensure_reconstructed_for_viz(case_dir)
         result = runner.run_foam_to_vtk(case_dir)
         vtk_dir = Path(case_dir) / "VTK"
         return vtk_dir if result.success and vtk_dir.exists() else None

@@ -53,6 +53,19 @@ class TestPolicy:
         ts = compute_time_settings(spec)
         assert ts["end_time"] == pytest.approx(25.0, rel=0.05)
 
+    def test_karman_custom_periods(self):
+        spec = _spec(steady_state=False, mesh_params={"karman_periods": 10})
+        ts = compute_time_settings(spec)
+        assert ts["end_time"] == pytest.approx(50.0, rel=0.05)
+
+    def test_periods_overrides_demo(self):
+        spec = _spec(
+            steady_state=False,
+            mesh_params={"demo_mode": True, "karman_periods": 3},
+        )
+        ts = compute_time_settings(spec)
+        assert ts["end_time"] == pytest.approx(15.0, rel=0.05)
+
     def test_steady_time_settings(self):
         ts = compute_time_settings(_spec(steady_state=True, solver="simpleFoam"))
         assert ts["end_time"] == 1000.0

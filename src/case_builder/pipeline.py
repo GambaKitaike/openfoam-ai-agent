@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 from rich.console import Console
@@ -10,7 +11,7 @@ from rich.console import Console
 from ..case_validator import CaseValidator
 from ..config import Settings
 from ..llm_client import LLMClient
-from ..models import CaseBuildState, EnrichedContext, GenerationResult
+from ..models import CaseBuildState, EnrichedContext, GenerationResult, SimulationSpec
 from ..runner import OpenFOAMRunner
 from .file_generators import FileGenerator
 from .mesh_generators import render_block_mesh_dict
@@ -32,11 +33,15 @@ BUILD_STEPS = [
 class CaseBuildPipeline:
     """依存順に OpenFOAM ケースファイルを生成する。"""
 
-    def __init__(self, settings: Settings):
+    def __init__(
+        self,
+        settings: Settings,
+        guidance_fn: Callable[[str, SimulationSpec, list[str] | None], str] | None = None,
+    ):
         self.settings = settings
         self.runner = OpenFOAMRunner(settings)
         self.validator = CaseValidator()
-        self.file_gen = FileGenerator(LLMClient(settings))
+        self.file_gen = FileGenerator(LLMClient(settings), guidance_fn=guidance_fn)
 
     def run(
         self,

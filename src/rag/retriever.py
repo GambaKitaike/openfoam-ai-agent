@@ -10,10 +10,10 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 
-from ..models import SimulationSpec, EnrichedContext, ReferenceMatch
+from ..models import SimulationSpec, EnrichedContext, ReferenceMatch, ReferenceHint
 from .case_selector import CaseSelector
 from .match_score import compute_match_score, should_use_fast_path
-from .reference_case_params import extract_reference_params
+from .reference_case_params import extract_reference_params, reference_hint_from_params
 from .requirement_profile import build_requirement_profile
 
 console = Console()
@@ -41,14 +41,33 @@ class OpenFOAMRetriever:
         description: str = "",
     ):
         """Agent① 用: 必要十分条件プロファイル。"""
-        similar: list[str] = []
+        similar_ids: list[str] = []
+        reference_hints: list[ReferenceHint] = []
         if self.is_available:
             try:
-                matched = self.selector.list_cases_matching(spec, limit=3)
-                similar = [m.get("case_id", "") for m in matched if m.get("case_id")]
+                matched = self.selector.list_similar_cases(spec, limit=3)
+                for item in matched:
+                    case_id = item.get("case_id", "")
+                    if not case_id:
+                        continue
+                    similar_ids.append(case_id)
+                    params = extract_reference_params(
+                        case_id=case_id,
+                        case_path=item.get("case_path", ""),
+                        reference_files=item.get("reference_files"),
+                        title_ja=item.get("title_ja", ""),
+                        summary_ja=item.get("summary_ja", ""),
+                        metadata=item.get("metadata"),
+                    )
+                    reference_hints.append(reference_hint_from_params(params))
             except Exception:
                 pass
-        return build_requirement_profile(spec, description, similar)
+        return build_requirement_profile(
+            spec,
+            description,
+            similar_case_ids=similar_ids,
+            reference_hints=reference_hints,
+        )
 
     def retrieve_match(
         self,

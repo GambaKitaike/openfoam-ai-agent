@@ -55,6 +55,8 @@ class OpenFOAMGPTAgent:
         self.validator = CaseValidator()
         self.file_gen = FileGenerator(self.llm)
         self.pipeline = CaseBuildPipeline(settings)
+        self._guidance_context: EnrichedContext | None = None
+        self._guidance_fn = None
 
     def run(
         self,
@@ -64,11 +66,22 @@ class OpenFOAMGPTAgent:
         reference_match: ReferenceMatch | None = None,
         parallel: bool = False,
         n_procs: int = 4,
+        file_guidance_fn=None,
     ) -> CaseArtifacts:
         """
         EnrichedContext からケースを生成・実行し CaseArtifacts を返す。
         """
         spec = context.spec
+
+        self._guidance_context = context
+        self._guidance_fn = file_guidance_fn
+        if file_guidance_fn:
+            self.pipeline = CaseBuildPipeline(
+                self.settings,
+                guidance_fn=lambda rel, s, patches: file_guidance_fn(
+                    rel, s, context, patch_names=patches
+                ),
+            )
 
         # ── Step 1: ケース生成 ────────────────────────────────────────
         console.print(Rule("[bold cyan]ケースファイルを生成中[/bold cyan]"))

@@ -40,8 +40,10 @@ ParaView で保存した **Uy**（y 方向速度）アニメーション:
 - **Agent① ↔ Agent② レビューループ** — Re/乱流/ソルバー矛盾を Agent 間で検出・修正
 - **カルマン渦 BC 修正** — 上下 `symmetryPlane` / `freestream` → **`slip` / `zeroGradient`**（OpenFOAM vortexShed 準拠）
 - **setFields 摂動** — 円柱後流に小さな非対称 perturbation（渦列分岐用）
-- **MPI 並列** — `--parallel --np N`（decomposePar → mpirun → reconstructPar）
-- **デモモード** — `--demo`（カルマン: 25 周期 → 5 周期、プレビュー向け）
+- **MPI 並列** — `--parallel --np N`（decomposePar → mpirun → **reconstructPar 全タイムステップ**）
+- **計算続行** — `continue-run`（latestTime から endTime 延長）
+- **復元 CLI** — `reconstruct`（processor* → 全タイムステップ、ParaView 向け）
+- **デモモード** — `--demo`（カルマン: 5 周期 = 25 s）/ 本番: 25 周期 = 125 s / `--periods N` で任意指定
 - **CLI 改善** — `pip install -e .` で `openfoam-agent` コマンド、`src/` からの `python main.py` も可
 
 ---
@@ -54,7 +56,7 @@ ParaView で保存した **Uy**（y 方向速度）アニメーション:
 [Agent①] extract                 → draft SimulationSpec
     ↓
 [Agent① ↔ Agent②] 内部ループ
-    RequirementProfile            → 未充足項目の補完
+    RequirementProfile            → 未充足項目の補完（類似チュートリアル典型値を主入力）
     review_spec                   → 物理整合性レビュー（Re/乱流/ソルバー等）
     ↓
 [Agent②] Reference Match         → match_score → fast path or staged
@@ -63,6 +65,7 @@ ParaView で保存した **Uy**（y 方向速度）アニメーション:
     経路 A: CaseApplier            → 参照ケース丸ごとコピー
     経路 B: CaseBuildPipeline      → transport → turbulence → controlDict
                                      → blockMesh → 0/ → fv* → setFields
+                                     → LLM 補助時は Agent② get_file_guidance()
     ↓
 [Agent④] Post-processing         → レポート & ParaView 案内
 ```
@@ -106,6 +109,7 @@ ParaView で保存した **Uy**（y 方向速度）アニメーション:
 - 渦周期 T ≈ D / (0.2·U) = 5 s（U=1, D=1）
 - 通常: endTime = 25 周期 = **125 s**, writeInterval = T/20
 - `--demo`: endTime = 5 周期 = **25 s**
+- `--periods N`: endTime = N 周期（`--demo` より優先）
 
 ---
 
@@ -132,6 +136,11 @@ python -m src.main run \
   "2D円柱 Re=1000 カルマン渦" \
   -o ./output/karman_demo --no-interactive --demo
 
+# 任意周期（例: 10 周期 = 50 s）
+python -m src.main run \
+  "2D円柱 Re=1000 カルマン渦" \
+  -o ./output/karman_10p --no-interactive --periods 10
+
 # Agent 通信テスト（ソルバー実行なし）
 python -m src.main test-agents --all --offline --no-interactive
 ```
@@ -146,6 +155,8 @@ python -m src.main test-agents --all --offline --no-interactive
 | コマンド | 説明 |
 |---------|------|
 | `run` | フルパイプライン（生成 → メッシュ → ソルバー → レポート） |
+| `continue-run` | 既存ケースを latestTime から endTime まで並列再開 |
+| `reconstruct` | 並列計算後の processor* を全タイムステップ復元（+ 任意で VTK） |
 | `build-index` | チュートリアル RAG インデックス構築 |
 | `test-agents` | Agent 間通信テスト（`--offline` / `--all`） |
 | `check` | 既存ケースの AI レビュー |
@@ -158,9 +169,33 @@ python -m src.main test-agents --all --offline --no-interactive
 | `--no-interactive` | Agent② 自動修正（バッチ/CI 向け） |
 | `--parallel` | MPI 並列実行（decomposePar → mpirun → reconstructPar） |
 | `--np N` | 並列プロセス数（デフォルト 4） |
-| `--demo` | 短時間デモ（カルマン: 5 周期） |
+| `--demo` | 短時間デモ（カルマン: 5 周期 = 25 s） |
+| `--periods N` | カルマン渦の放出周期数（本番=25）。`--demo` より優先 |
 | `--threshold` | 収束残差閾値 |
 | `--stl` | snappyHexMesh 用 STL パス |
+
+### `continue-run` / `reconstruct`
+
+並列計算後は **全タイムステップ** を `reconstructPar` で復元します（`run --parallel` および Agent④ 後処理で自動）。
+
+```bash
+# t=125 → 200 s まで続行（MPI 4）
+python -m src.main continue-run \
+  ./output/karman_re1000/pimpleFoam_cylinder_2d_ogrid \
+  -e 200 --np 4
+
+# 手動で processor* から復元（過去ケース向け）
+python -m src.main reconstruct \
+  ./output/karman_re1000/pimpleFoam_cylinder_2d_ogrid
+```
+
+| フラグ | 説明 |
+|--------|------|
+| `-e`, `--end-time` | 新しい endTime [s]（continue-run 必須） |
+| `-w`, `--write-interval` | writeInterval [s]（continue-run、省略時は変更なし） |
+| `--np` | MPI プロセス数 |
+| `--latest-only` | reconstruct: 最新タイムのみ復元 |
+| `--no-vtk` | foamToVTK をスキップ |
 
 ### 対話・非対話
 
@@ -182,7 +217,8 @@ openfoam-ai-agent/
 │   ├── case_builder/                段階的生成（pipeline, builders, policy）
 │   ├── case_applier.py              fast path: 参照ケース適用
 │   ├── mesh/cylinder_2d_ogrid.py   O-グリッド blockMeshDict 生成
-│   ├── runner.py                    OpenFOAM 実行（MPI 対応）
+│   ├── runner.py                    OpenFOAM 実行（MPI・続行・復元）
+│   ├── case_runtime.py              タイムディレクトリ / controlDict 操作
 │   ├── rag/                         ケース単位 RAG
 │   └── agents/                      Agent①〜④
 ├── docs/demo/
@@ -218,12 +254,10 @@ Windows エクスプローラー:
 \\wsl.localhost\Ubuntu-24.04\home\<user>\openfoam-ai-agent\output\<case>\<case>.foam
 ```
 
-並列計算後は全タイムステップを復元してから可視化:
+並列計算後の復元は `run --parallel` 完了時および Agent④ 後処理で **自動実行** されます。手動の場合:
 
 ```bash
-cd output/<case>
-reconstructPar
-foamToVTK
+python -m src.main reconstruct ./output/<case>
 ```
 
 ---
@@ -244,10 +278,10 @@ foamToVTK
 | 状態 | 内容 |
 |------|------|
 | ✅ 完了 | staged case builder（Jinja 廃止）、Agent①↔Agent② レビューループ |
-| ✅ 完了 | カルマン O-grid、slip BC、MPI 並列、`--demo`、`test-agents` |
+| ✅ 完了 | カルマン O-grid、slip BC、MPI 並列、`--demo` / `--periods`、`test-agents` |
 | ✅ 完了 | Re=1000 カルマン渦デモ（README GIF） |
-| 🔜 次 | Agent② がチュートリアル典型値をプロファイル主入力に（`similar_case_ids` 活用） |
-| 🔜 次 | Agent③ → Agent② `get_file_guidance()`（ファイル単位 syntax 問い合わせ） |
+| ✅ 完了 | Agent② RAG 強化（`reference_hints` / `similar_case_ids` → RequirementProfile） |
+| ✅ 完了 | Agent③ → Agent② `get_file_guidance()`（staged LLM 補助） |
 | 📋 将来 | 1 ケースを会話で incremental に編集（Cursor 的 diff） |
 
 ---

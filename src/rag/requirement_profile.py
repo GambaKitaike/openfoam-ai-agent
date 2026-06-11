@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from ..models import RequirementField, RequirementProfile, SimulationSpec, SpecReviewAlternative, SpecReviewIssue
+from ..models import RequirementField, RequirementProfile, ReferenceHint, SimulationSpec, SpecReviewAlternative, SpecReviewIssue
 
 LAMINAR_RE_LIMIT = 2300
 
@@ -93,22 +93,79 @@ def _field_satisfied(
     return True
 
 
+def _hint_label(hint: ReferenceHint) -> str:
+    return hint.title_ja or hint.case_id.split("/")[-1] or hint.case_id
+
+
+def _suggest_from_reference_hints(
+    key: str,
+    hints: list[ReferenceHint],
+    cfg_defaults: dict,
+) -> tuple[float | str | bool | None, str | None]:
+    """類似チュートリアル典型値を suggested の主入力にする。"""
+    if not hints:
+        return cfg_defaults.get(key), None
+
+    attr_map = {
+        "inlet_velocity": "inlet_velocity",
+        "nu": "nu",
+        "turbulence_model": "turbulence_model",
+        "solver": "solver",
+        "steady_state": "steady_state",
+        "characteristic_length": "characteristic_length",
+    }
+    attr = attr_map.get(key)
+    if not attr:
+        return cfg_defaults.get(key), None
+
+    values: list[float | str | bool] = []
+    labels: list[str] = []
+    for hint in hints:
+        val = getattr(hint, attr, None)
+        if val is None or val == "":
+            continue
+        values.append(val)
+        labels.append(_hint_label(hint))
+
+    if not values:
+        return cfg_defaults.get(key), None
+
+    if isinstance(values[0], bool) or key in ("solver", "turbulence_model"):
+        from collections import Counter
+        chosen = Counter(values).most_common(1)[0][0]
+        label = labels[0]
+        return chosen, f"類似チュートリアル ({label})"
+
+    nums = sorted(float(v) for v in values)
+    median = nums[len(nums) // 2]
+    label = labels[0]
+    return round(median, 8 if key == "nu" else 6), f"類似チュートリアル ({label})"
+
+
 def build_requirement_profile(
     spec: SimulationSpec,
     description: str = "",
     similar_case_ids: list[str] | None = None,
+    reference_hints: list[ReferenceHint] | None = None,
 ) -> RequirementProfile:
     """SimulationSpec と説明文から未充足項目を列挙。"""
     phenomenon = spec.phenomenon or "general"
     cfg = PHENOMENON_REQUIREMENTS.get(phenomenon, {})
     defaults_set = set(spec.defaults_applied or [])
     target_re = _parse_re_from_description(description)
+    hints = list(reference_hints or [])
 
     fields: list[RequirementField] = []
     for key, required, reason in cfg.get("fields", []):
         if _field_satisfied(spec, key, defaults_set, target_re):
             continue
-        suggested = cfg.get("defaults", {}).get(key)
+        suggested, hint_reason = _suggest_from_reference_hints(
+            key, hints, cfg.get("defaults", {})
+        )
+        if suggested is None:
+            suggested = cfg.get("defaults", {}).get(key)
+        if hint_reason:
+            reason = hint_reason
         if key == "steady_state":
             suggested = cfg.get("defaults", {}).get("steady_state", False)
         if key == "phenomenon" and not suggested:
@@ -146,11 +203,30 @@ def build_requirement_profile(
                     suggested=round(expected_u, 6),
                 ))
 
+    constraints = list(cfg.get("constraints", []))
+    if hints:
+        ref_lines = []
+        for hint in hints[:2]:
+            parts = []
+            if hint.inlet_velocity is not None:
+                parts.append(f"U={hint.inlet_velocity:g}")
+            if hint.nu is not None:
+                parts.append(f"nu={hint.nu:g}")
+            if hint.turbulence_model:
+                parts.append(hint.turbulence_model)
+            if hint.re_number is not None:
+                parts.append(f"Re≈{hint.re_number:,.0f}")
+            if parts:
+                ref_lines.append(f"{_hint_label(hint)}: {', '.join(parts)}")
+        if ref_lines:
+            constraints.insert(0, "参照典型値 — " + " / ".join(ref_lines))
+
     return RequirementProfile(
         phenomenon=phenomenon,
         fields=fields,
-        constraints=list(cfg.get("constraints", [])),
+        constraints=constraints,
         similar_case_ids=list(similar_case_ids or []),
+        reference_hints=hints,
     )
 
 
@@ -302,6 +378,47 @@ def review_spec(
                 message=f"入力 Re={target_re:g} と U/nu/L が不一致（期待 U≈{expected_u:g} m/s）",
                 suggested=round(expected_u, 6),
                 severity="error",
+            ))
+
+    # 類似チュートリアル典型値との乖離
+    if profile.reference_hints:
+        from .reference_case_params import ReferenceCaseParams, params_differ_significantly
+
+        primary = profile.reference_hints[0]
+        ref = ReferenceCaseParams(
+            case_id=primary.case_id,
+            title_ja=primary.title_ja,
+            inlet_velocity=primary.inlet_velocity,
+            nu=primary.nu,
+            turbulence_model=primary.turbulence_model,
+            solver=primary.solver,
+            steady_state=primary.steady_state,
+            characteristic_length=primary.characteristic_length,
+            re_from_summary=primary.re_number,
+        )
+        if params_differ_significantly(spec, ref):
+            ref_parts = ref.to_display_lines()
+            ref_summary = " / ".join(ref_parts[:3]) if ref_parts else _hint_label(primary)
+            issues.append(SpecReviewIssue(
+                key="inlet_velocity",
+                message=(
+                    f"類似チュートリアル ({_hint_label(primary)}) の典型条件と差があります: "
+                    f"{ref_summary}"
+                ),
+                suggested=primary.inlet_velocity or spec.inlet_velocity,
+                severity="warning",
+                alternatives=[
+                SpecReviewAlternative(
+                    key="nu",
+                    suggested=primary.nu,
+                    label=f"参照 nu={primary.nu:g}",
+                ),
+                SpecReviewAlternative(
+                    key="turbulence_model",
+                    suggested=primary.turbulence_model,
+                    label=f"参照乱流={primary.turbulence_model}",
+                ),
+            ] if (primary.nu is not None or primary.turbulence_model) else [],
             ))
 
     return issues

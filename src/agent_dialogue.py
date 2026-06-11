@@ -73,6 +73,17 @@ def profile_snapshot(profile: RequirementProfile) -> dict[str, Any]:
             f.key: f.suggested for f in profile.fields if f.suggested is not None
         },
         "constraints": list(profile.constraints),
+        "similar_case_ids": list(profile.similar_case_ids),
+        "reference_hints": [
+            {
+                "case_id": h.case_id,
+                "title_ja": h.title_ja,
+                "inlet_velocity": h.inlet_velocity,
+                "nu": h.nu,
+                "turbulence_model": h.turbulence_model,
+            }
+            for h in profile.reference_hints
+        ],
     }
 
 
@@ -152,6 +163,10 @@ def print_dialogue_report(report: AgentDialogueReport) -> None:
             or (report.final_spec is not None),
         ),
         ("Agent② → Agent③ (ReferenceMatch)", has_match),
+        (
+            "Agent③ → Agent② (get_file_guidance)",
+            any(m.kind == "file_guidance" for m in report.messages),
+        ),
     ]
     ok = all(passed for _, passed in checks)
 
@@ -178,9 +193,10 @@ def print_dialogue_report(report: AgentDialogueReport) -> None:
             " Agent③ への staged フォールバックは引き続き可能。[/dim]"
         )
 
-    console.print(
-        "[dim]未実装: Agent③ → Agent② のファイル単位 syntax 問い合わせ (get_file_guidance)[/dim]"
-    )
+    if not any(m.kind == "file_guidance" for m in report.messages):
+        console.print(
+            "[dim]注: get_file_guidance は Agent③ 段階生成（LLM フォールバック）時に使用。[/dim]"
+        )
 
 
 def report_to_dict(report: AgentDialogueReport) -> dict[str, Any]:

@@ -7,7 +7,14 @@ from rich.console import Console
 from rich.panel import Panel
 
 from ..config import Settings
-from ..models import RequirementProfile, ReferenceMatch, SimulationSpec, EnrichedContext, SpecReviewIssue
+from ..models import (
+    EnrichedContext,
+    RequirementProfile,
+    ReferenceMatch,
+    SimulationSpec,
+    SpecReviewIssue,
+)
+from ..rag.file_guidance import build_file_guidance, resolve_reference_snippet
 from ..rag.retriever import OpenFOAMRetriever
 
 console = Console()
@@ -41,6 +48,31 @@ class PromptGenerationAgent:
         """Agent① 向け: 完成 spec の物理整合性レビュー。"""
         from ..rag.requirement_profile import review_spec as _review
         return _review(spec, profile, description)
+
+    def get_file_guidance(
+        self,
+        rel_path: str,
+        spec: SimulationSpec,
+        context: EnrichedContext | None = None,
+        *,
+        patch_names: list[str] | None = None,
+        question: str = "",
+    ) -> str:
+        """Agent③ 向け: ファイル単位 OpenFOAM syntax ガイダンス。"""
+        ref_content, case_label = resolve_reference_snippet(
+            rel_path,
+            spec,
+            context,
+            self.retriever.selector,
+        )
+        return build_file_guidance(
+            rel_path,
+            spec,
+            reference_content=ref_content,
+            case_label=case_label,
+            patch_names=patch_names,
+            question=question,
+        )
 
     def retrieve_match(
         self,

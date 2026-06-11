@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..models import SimulationSpec
+from ..models import ReferenceHint, SimulationSpec
 from ..rag.case_catalog import _find_zero_dir, _parse_turbulence_model, _read_text
 
 
@@ -208,6 +208,21 @@ def extract_reference_params(
         )
 
     return params
+
+
+def reference_hint_from_params(params: ReferenceCaseParams) -> ReferenceHint:
+    """ReferenceCaseParams → RequirementProfile 用の軽量ヒント。"""
+    return ReferenceHint(
+        case_id=params.case_id,
+        title_ja=params.title_ja,
+        inlet_velocity=params.inlet_velocity,
+        nu=params.nu,
+        turbulence_model=params.turbulence_model,
+        solver=params.solver,
+        steady_state=params.steady_state,
+        characteristic_length=params.characteristic_length,
+        re_number=params.re_number,
+    )
 
 
 def params_differ_significantly(

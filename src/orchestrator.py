@@ -54,6 +54,7 @@ class OpenFOAMOrchestrator:
         parallel: bool = False,
         n_procs: int = 4,
         demo: bool = False,
+        periods: int | None = None,
     ) -> AnalysisReport:
         """
         自然言語入力からParaView案内まで全工程を実行する。
@@ -80,6 +81,8 @@ class OpenFOAMOrchestrator:
             console.print(f"[bold]並列:[/bold] mpirun -np {n_procs}")
         if demo:
             console.print("[bold]デモ:[/bold] 短時間設定 (GIF/プレビュー向け)")
+        if periods is not None:
+            console.print(f"[bold]周期数:[/bold] {periods} (カルマン渦 endTime)")
         console.print()
 
         # ── Agent①: draft 抽出 ────────────────────────────────────────
@@ -91,8 +94,14 @@ class OpenFOAMOrchestrator:
         spec = self.agent1.complete_hearing(
             spec, self.agent2, description, interactive=interactive
         )
-        if demo:
+        if periods is not None:
+            spec.mesh_params["karman_periods"] = periods
+        elif demo:
             spec.mesh_params["demo_mode"] = True
+
+        guidance_fn = lambda rel, s, ctx, patch_names=None: self.agent2.get_file_guidance(
+            rel, s, ctx, patch_names=patch_names
+        )
 
         # ── Agent② + Agent③（ケース再選定ループ）────────────────────
         exclude_case_ids: list[str] = []
@@ -117,6 +126,7 @@ class OpenFOAMOrchestrator:
                 reference_match=match,
                 parallel=parallel,
                 n_procs=n_procs,
+                file_guidance_fn=guidance_fn,
             )
 
             if artifacts.solver_success:
