@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # LLM設定
     llm_provider: str = "openai"          # "openai" or "anthropic"
     llm_model: str = "gpt-4o"
+    llm_model_mini: str = "gpt-4o-mini"   # case_scaffold 内の spec 変換など単発出力用
     openai_api_key: str = ""
     anthropic_api_key: str = ""
 
