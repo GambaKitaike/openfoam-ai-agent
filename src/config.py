@@ -1,10 +1,14 @@
 """
 設定管理 - .env ファイルや環境変数から設定を読み込む
 """
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+    )
     # LLM設定
     llm_provider: str = "openai"          # "openai" or "anthropic"
     llm_model: str = "gpt-4o"
@@ -17,7 +21,3 @@ class Settings(BaseSettings):
 
     # 出力設定
     default_output_dir: str = "./output"
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
