@@ -45,6 +45,10 @@ ParaView で保存した **Uy**（y 方向速度）アニメーション:
 - **復元 CLI** — `reconstruct`（processor* → 全タイムステップ、ParaView 向け）
 - **デモモード** — `--demo`（カルマン: 5 周期 = 25 s）/ 本番: 25 周期 = 125 s / `--periods N` で任意指定
 - **CLI 改善** — `pip install -e .` で `openfoam-agent` コマンド、`src/` からの `python main.py` も可
+- **Re のみ指定** — 流速未指定なら **U = 1 m/s 固定**、ν = U·L/Re で整合（例: `Re=1000` → U=1, ν=0.001）
+- **メッシュ連動 Δt** — blockMesh → checkMesh 後、`Δt = maxCo × Δx / U`（maxCo=0.5）で controlDict を更新
+- **adjustTimeStep** — 非定常ケース全般（カルマン O-グリッド含む）で `adjustTimeStep yes` / `maxCo 0.5`
+- **非定常モニタ** — `pimpleFoam` 実行中は Time/endTime の進捗 % 表示（定常の「収束しました！」と区別）
 
 ---
 
@@ -74,7 +78,8 @@ ParaView で保存した **Uy**（y 方向速度）アニメーション:
 
 | モジュール | 役割 |
 |-----------|------|
-| `case_builder/policy.py` | ソルバー選択、Re 整合、時間刻み（カルマンは Strouhal ベース） |
+| `case_builder/policy.py` | ソルバー選択、Re 整合（Re のみ → U=1）、時間刻み（Strouhal ベース） |
+| `case_builder/mesh_metrics.py` | checkMesh から Δx 推定 → CFL ベース deltaT / maxDeltaT |
 | `case_builder/builders.py` | controlDict, fvSchemes, fvSolution, 0/, decomposeParDict 等 |
 | `case_builder/mesh_generators.py` | 汎用 box channel メッシュ |
 | `mesh/cylinder_2d_ogrid.py` | カルマン渦用 O-グリッド blockMeshDict |
@@ -103,6 +108,7 @@ ParaView で保存した **Uy**（y 方向速度）アニメーション:
 
 - 流入方向: **+x**（左 → 右）
 - Re = U·D/ν（例: U=1, D=1, ν=0.001 → Re=1000）
+- **Re のみ**（`Re=1000` など流速未指定）: **U = 1 m/s** を固定し ν を自動算出
 
 ### 時間設定（policy 自動計算）
 
@@ -110,6 +116,8 @@ ParaView で保存した **Uy**（y 方向速度）アニメーション:
 - 通常: endTime = 25 周期 = **125 s**, writeInterval = T/20
 - `--demo`: endTime = 5 周期 = **25 s**
 - `--periods N`: endTime = N 周期（`--demo` より優先）
+- **初期 Δt**: checkMesh の最小面積から Δx ≈ √(minFaceArea) → `deltaT = 0.5 × Δx / U`
+- **実行中**: `adjustTimeStep yes`, `maxCo 0.5`, `maxDeltaT = 100 × deltaT`（Courant 数に応じて Δt 自動増加）
 
 ---
 
@@ -227,7 +235,7 @@ openfoam-ai-agent/
 │   ├── case_intents/                intent JSON キャッシュ
 │   └── chroma_db/                   ベクトル DB（.gitignore）
 ├── output/                          実行結果（.gitignore）
-└── tests/                           pytest（20 ファイル）
+└── tests/                           pytest（24 ファイル・118 テスト）
 ```
 
 ---
@@ -282,6 +290,7 @@ python -m src.main reconstruct ./output/<case>
 | ✅ 完了 | Re=1000 カルマン渦デモ（README GIF） |
 | ✅ 完了 | Agent② RAG 強化（`reference_hints` / `similar_case_ids` → RequirementProfile） |
 | ✅ 完了 | Agent③ → Agent② `get_file_guidance()`（staged LLM 補助） |
+| ✅ 完了 | Re のみ指定 → U=1 m/s 固定、メッシュ連動 Δt、非定常進捗モニタ |
 | 📋 将来 | 1 ケースを会話で incremental に編集（Cursor 的 diff） |
 
 ---

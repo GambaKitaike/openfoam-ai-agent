@@ -36,11 +36,19 @@ class TestPolicy:
         assert spec.solver == "pimpleFoam"
         assert spec.steady_state is False
 
-    def test_reconcile_re_adjusts_velocity(self):
-        spec = _spec(inlet_velocity=0.1, nu=0.01, characteristic_length=1.0)
-        reconcile_re(spec, 100.0)
+    def test_reconcile_re_re_only_fixes_u_and_nu(self):
+        spec = _spec(inlet_velocity=0.1, nu=1.5e-5, characteristic_length=1.0)
+        reconcile_re(spec, 1000.0)
         assert spec.inlet_velocity == pytest.approx(1.0)
-        assert spec.re_number == pytest.approx(100.0)
+        assert spec.nu == pytest.approx(0.001)
+        assert spec.re_number == pytest.approx(1000.0)
+
+    def test_reconcile_re_with_explicit_velocity_derives_nu(self):
+        spec = _spec(inlet_velocity=1.0, nu=1.5e-5, characteristic_length=1.0)
+        reconcile_re(spec, 1000.0, "Re=1000 流入速度1m/s")
+        assert spec.inlet_velocity == pytest.approx(1.0)
+        assert spec.nu == pytest.approx(0.001)
+        assert spec.re_number == pytest.approx(1000.0)
 
     def test_karman_time_settings(self):
         ts = compute_time_settings(_spec(steady_state=False))

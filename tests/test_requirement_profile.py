@@ -44,38 +44,20 @@ def _hints(**kwargs) -> list[ReferenceHint]:
     )]
 
 
-def _spec(**overrides) -> SimulationSpec:
-    defaults = dict(
-        solver="icoFoam",
-        case_type="channel_2d",
-        mesh_template="box_channel_2d",
-        turbulence_model="laminar",
-        steady_state=True,
-        inlet_velocity=0.1,
-        dimensions=2,
-        characteristic_length=1.0,
-        nu=0.01,
-        phenomenon="karman_vortex_shedding",
-        defaults_applied=[],
-    )
-    defaults.update(overrides)
-    return SimulationSpec(**defaults)
-
-
 class TestRequirementProfile:
     def test_karman_lists_missing_fields(self):
         profile = build_requirement_profile(_spec(), "Re=100 カルマン渦")
         keys = {f.key for f in profile.fields}
         assert "inlet_velocity" in keys or "steady_state" in keys
 
-    def test_re_priority_suggests_velocity(self):
+    def test_re_only_suggests_nu_from_re(self):
         profile = build_requirement_profile(
-            _spec(inlet_velocity=0.1, defaults_applied=["inlet_velocity"]),
-            "Re=100",
+            _spec(inlet_velocity=0.1, nu=1.5e-5),
+            "Re=1000",
         )
-        u_field = next((f for f in profile.fields if f.key == "inlet_velocity"), None)
-        if u_field:
-            assert u_field.suggested == pytest.approx(1.0)
+        nu_field = next((f for f in profile.fields if f.key == "nu"), None)
+        assert nu_field is not None
+        assert nu_field.suggested == pytest.approx(0.001)
 
     def test_apply_defaults_sets_ogrid(self):
         spec = _spec()

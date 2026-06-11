@@ -70,15 +70,8 @@ def _mentioned_in(text: str, *keywords: str) -> bool:
 
 
 def _parse_re_from_description(description: str) -> float | None:
-    m = re.search(r"Re\s*[=:：]?\s*([\d.eE+\-]+)", description, re.IGNORECASE)
-    if not m:
-        m = re.search(r"レイノルズ数\s*[=:：]?\s*([\d.eE+\-]+)", description)
-    if m:
-        try:
-            return float(m.group(1))
-        except ValueError:
-            pass
-    return None
+    from ..case_builder.policy import parse_re_from_description
+    return parse_re_from_description(description)
 
 
 def _recalc_re(spec: SimulationSpec) -> None:
@@ -97,16 +90,25 @@ def collect_clarifications(
     defaults = set(spec.defaults_applied or [])
     hints = PHENOMENON_HINTS.get(spec.phenomenon, {})
     target_re = _parse_re_from_description(description)
+    from ..case_builder.policy import DEFAULT_RE_VELOCITY, nu_from_re, velocity_mentioned_in
 
-    # 入力文に Re が書いてあれば速度を逆算できる（代表長さ・nu が分かる場合）
-    if target_re is not None and "inlet_velocity" in defaults:
-        vel = target_re * spec.nu / spec.characteristic_length
+    # Re のみ指定: U=1 m/s 固定 → ν を算出
+    if target_re is not None and "inlet_velocity" in defaults and not velocity_mentioned_in(description):
         fields.append(ClarificationField(
             key="inlet_velocity",
             label="流速 (m/s)",
             current=spec.inlet_velocity,
-            suggested=round(vel, 4),
-            reason=f"入力の Re={target_re:g} から逆算",
+            suggested=DEFAULT_RE_VELOCITY,
+            reason=f"Re={target_re:g} 指定 — 流速を {DEFAULT_RE_VELOCITY:g} m/s に固定",
+        ))
+    elif target_re is not None and velocity_mentioned_in(description) and "nu" in defaults:
+        nu_val = nu_from_re(spec.inlet_velocity, spec.characteristic_length, target_re)
+        fields.append(ClarificationField(
+            key="nu",
+            label="動粘度 nu (m²/s)",
+            current=spec.nu,
+            suggested=round(nu_val, 8),
+            reason=f"Re={target_re:g}, U={spec.inlet_velocity:g} m/s から算出",
         ))
 
     if "inlet_velocity" in defaults and not any(
@@ -313,7 +315,7 @@ def clarify_with_profile(
     apply_profile_defaults(spec, profile)
 
     if target_re is not None:
-        reconcile_re(spec, target_re)
+        reconcile_re(spec, target_re, description)
 
     fields = []
     for rf in profile.fields:
@@ -391,7 +393,7 @@ def clarify_with_profile(
             spec.defaults_applied.append(f"confirmed_{f.key}")
 
     if target_re is not None:
-        reconcile_re(spec, target_re)
+        reconcile_re(spec, target_re, description)
 
     apply_solver_policy(spec)
     _recalc_re(spec)

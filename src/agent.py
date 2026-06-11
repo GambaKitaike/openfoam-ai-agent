@@ -124,8 +124,15 @@ class OpenFOAMAgent:
             console.print("[yellow]  ⚠ checkMesh に問題があります（続行します）[/yellow]")
 
         # ソルバー実行（リアルタイム収束モニタリング）
+        from .case_runtime import read_end_time
+
         log_file = str(Path(case_dir) / f"log.{spec.solver}")
-        monitor = SolverMonitor(log_file=log_file, convergence_threshold=convergence_threshold)
+        monitor = SolverMonitor(
+            log_file=log_file,
+            convergence_threshold=convergence_threshold,
+            steady_state=spec.steady_state,
+            end_time=read_end_time(case_dir),
+        )
 
         solver_result = monitor.watch(
             solver_result_fn=lambda: self.runner.run_solver(case_dir, spec.solver)

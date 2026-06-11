@@ -26,6 +26,7 @@ from ..models import (
     EnrichedContext, GenerationResult, CaseArtifacts, ReferenceMatch,
 )
 from ..runner import OpenFOAMRunner
+from ..case_runtime import read_end_time
 from ..monitor import SolverMonitor
 from rich.console import Console
 from rich.panel import Panel
@@ -188,7 +189,13 @@ class OpenFOAMGPTAgent:
         # ── Step 4: ソルバー実行（自己修正ループ）────────────────────
         console.print(Rule("[bold cyan]ソルバー実行[/bold cyan]"))
         log_file = str(Path(case_dir) / f"log.{spec.solver}")
-        monitor = SolverMonitor(log_file=log_file, convergence_threshold=convergence_threshold)
+        end_time = read_end_time(case_dir)
+        monitor = SolverMonitor(
+            log_file=log_file,
+            convergence_threshold=convergence_threshold,
+            steady_state=spec.steady_state,
+            end_time=end_time,
+        )
 
         # reference case 使用時は solver を controlDict に合わせる
         cd_path = Path(case_dir) / "system" / "controlDict"

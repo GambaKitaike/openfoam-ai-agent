@@ -109,8 +109,32 @@ class CaseApplier:
             end_time = self._compute_end_time(spec)
             text = re.sub(r"endTime\s+[\d.eE+-]+\s*;", f"endTime         {end_time:g};", text, count=1)
             if not spec.steady_state:
-                delta_t = self._compute_delta_t(spec)
-                text = re.sub(r"deltaT\s+[\d.eE+-]+\s*;", f"deltaT          {delta_t:g};", text, count=1)
+                from .case_builder.mesh_metrics import (
+                    compute_delta_t,
+                    compute_max_delta_t,
+                    estimate_min_cell_length,
+                    parse_min_cell_length_from_checkmesh,
+                )
+                log = case_path / "log.checkMesh"
+                min_cell = (
+                    parse_min_cell_length_from_checkmesh(log)
+                    or estimate_min_cell_length(spec)
+                )
+                delta_t = compute_delta_t(min_cell, spec.inlet_velocity)
+                max_dt = compute_max_delta_t(delta_t)
+                text = re.sub(
+                    r"deltaT\s+[\d.eE+-]+\s*;",
+                    f"deltaT          {delta_t:g};",
+                    text,
+                    count=1,
+                )
+                if re.search(r"maxDeltaT\s+", text):
+                    text = re.sub(
+                        r"maxDeltaT\s+[\d.eE+-]+\s*;",
+                        f"maxDeltaT       {max_dt:g};",
+                        text,
+                        count=1,
+                    )
                 if spec.solver == "icoFoam":
                     text = re.sub(r"adjustTimeStep\s+\w+\s*;", "adjustTimeStep  no;", text)
             cd.write_text(text)
@@ -148,9 +172,9 @@ class CaseApplier:
         return 1000.0
 
     def _compute_delta_t(self, spec: SimulationSpec) -> float:
-        char_len = spec.characteristic_length or 0.1
-        min_cell = char_len * 0.023
-        return round(min_cell * 0.3 / max(spec.inlet_velocity * 3, 0.01), 6)
+        from .case_builder.mesh_metrics import compute_delta_t, estimate_min_cell_length
+        min_cell = estimate_min_cell_length(spec)
+        return compute_delta_t(min_cell, spec.inlet_velocity)
 
     def _sync_control_dict_solver(self, case_path: Path, spec: SimulationSpec) -> None:
         cd = case_path / "system" / "controlDict"

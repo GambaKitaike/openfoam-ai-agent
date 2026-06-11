@@ -54,15 +54,8 @@ PHENOMENON_REQUIREMENTS: dict[str, dict] = {
 
 
 def _parse_re_from_description(description: str) -> float | None:
-    m = re.search(r"Re\s*[=:：]?\s*([\d.eE+\-]+)", description, re.IGNORECASE)
-    if not m:
-        m = re.search(r"レイノルズ数\s*[=:：]?\s*([\d.eE+\-]+)", description)
-    if m:
-        try:
-            return float(m.group(1))
-        except ValueError:
-            pass
-    return None
+    from ..case_builder.policy import parse_re_from_description
+    return parse_re_from_description(description)
 
 
 def _field_satisfied(
@@ -79,8 +72,11 @@ def _field_satisfied(
         if spec.phenomenon == "karman_vortex_shedding":
             return spec.steady_state is False
         return True
-    if key == "nu" and target_re and spec.inlet_velocity and spec.characteristic_length:
-        expected = spec.inlet_velocity * spec.characteristic_length / target_re
+    if key == "nu" and target_re and spec.characteristic_length:
+        from ..case_builder.policy import DEFAULT_RE_VELOCITY, nu_from_re, velocity_mentioned_in
+        # satisfied check uses description-less heuristic: compare to U=1 or current U
+        u = spec.inlet_velocity if spec.inlet_velocity else DEFAULT_RE_VELOCITY
+        expected = nu_from_re(u, spec.characteristic_length, target_re)
         if spec.nu and abs(spec.nu - expected) / max(expected, 1e-12) < 0.05:
             return True
     val = getattr(spec, key, None)
@@ -154,6 +150,8 @@ def build_requirement_profile(
     defaults_set = set(spec.defaults_applied or [])
     target_re = _parse_re_from_description(description)
     hints = list(reference_hints or [])
+    from ..case_builder.policy import DEFAULT_RE_VELOCITY, nu_from_re, velocity_mentioned_in
+    u_explicit = velocity_mentioned_in(description)
 
     fields: list[RequirementField] = []
     for key, required, reason in cfg.get("fields", []):
@@ -170,15 +168,14 @@ def build_requirement_profile(
             suggested = cfg.get("defaults", {}).get("steady_state", False)
         if key == "phenomenon" and not suggested:
             suggested = phenomenon
-        if key == "inlet_velocity" and target_re and spec.nu and spec.characteristic_length:
-            suggested = round(target_re * spec.nu / spec.characteristic_length, 6)
-            reason = f"入力 Re={target_re:g} から逆算"
+        if key == "inlet_velocity" and target_re and not u_explicit:
+            suggested = DEFAULT_RE_VELOCITY
+            reason = f"Re={target_re:g} 指定 — 流速を {DEFAULT_RE_VELOCITY:g} m/s に固定"
         if key == "nu":
-            if target_re and spec.inlet_velocity and spec.characteristic_length:
-                suggested = round(
-                    spec.inlet_velocity * spec.characteristic_length / target_re, 8
-                )
-                reason = f"入力 Re={target_re:g} から nu を算出"
+            if target_re and spec.characteristic_length:
+                u = spec.inlet_velocity if u_explicit else DEFAULT_RE_VELOCITY
+                suggested = round(nu_from_re(u, spec.characteristic_length, target_re), 8)
+                reason = f"Re={target_re:g}, U={u:g} m/s から ν を算出"
             elif spec.inlet_velocity and spec.characteristic_length and spec.re_number:
                 suggested = round(
                     spec.inlet_velocity * spec.characteristic_length / spec.re_number, 8
@@ -191,16 +188,35 @@ def build_requirement_profile(
             parser="bool" if key == "steady_state" else ("str" if key in ("solver", "turbulence_model", "phenomenon") else "float"),
         ))
 
-    # Re 整合: 2 自由度のみ調整（nu 固定で U を逆算）
-    if target_re and spec.nu and spec.characteristic_length:
-        expected_u = target_re * spec.nu / spec.characteristic_length
-        if abs(expected_u - spec.inlet_velocity) / max(spec.inlet_velocity, 1e-9) > 0.05:
+    # Re 整合（流速明示時のみ ν を逆算して指摘）
+    if target_re and spec.characteristic_length and u_explicit:
+        expected_nu = nu_from_re(spec.inlet_velocity, spec.characteristic_length, target_re)
+        if abs(expected_nu - spec.nu) / max(spec.nu, 1e-12) > 0.05:
+            if not any(f.key == "nu" for f in fields):
+                fields.insert(0, RequirementField(
+                    key="nu",
+                    required=True,
+                    reason=f"Re={target_re:g}, U={spec.inlet_velocity:g} m/s との整合",
+                    suggested=round(expected_nu, 8),
+                ))
+    elif target_re and spec.characteristic_length and not u_explicit:
+        expected_u = DEFAULT_RE_VELOCITY
+        expected_nu = nu_from_re(DEFAULT_RE_VELOCITY, spec.characteristic_length, target_re)
+        if abs(spec.inlet_velocity - expected_u) / max(expected_u, 1e-9) > 0.05:
             if not any(f.key == "inlet_velocity" for f in fields):
                 fields.insert(0, RequirementField(
                     key="inlet_velocity",
                     required=True,
-                    reason=f"入力 Re={target_re:g} との整合",
-                    suggested=round(expected_u, 6),
+                    reason=f"Re={target_re:g} 指定 — U={expected_u:g} m/s を推奨",
+                    suggested=expected_u,
+                ))
+        if abs(spec.nu - expected_nu) / max(expected_nu, 1e-12) > 0.05:
+            if not any(f.key == "nu" for f in fields):
+                fields.insert(0, RequirementField(
+                    key="nu",
+                    required=True,
+                    reason=f"Re={target_re:g}, U={expected_u:g} m/s から ν を算出",
+                    suggested=round(expected_nu, 8),
                 ))
 
     constraints = list(cfg.get("constraints", []))
@@ -368,17 +384,42 @@ def review_spec(
                 severity="warning",
             ))
 
-    # Re 明示入力との速度整合
+    # Re 明示入力との U/ν 整合
     target_re = _parse_re_from_description(description)
-    if target_re and spec.nu and spec.characteristic_length:
-        expected_u = target_re * spec.nu / spec.characteristic_length
-        if abs(expected_u - spec.inlet_velocity) / max(spec.inlet_velocity, 1e-9) > 0.05:
-            issues.append(SpecReviewIssue(
-                key="inlet_velocity",
-                message=f"入力 Re={target_re:g} と U/nu/L が不一致（期待 U≈{expected_u:g} m/s）",
-                suggested=round(expected_u, 6),
-                severity="error",
-            ))
+    from ..case_builder.policy import DEFAULT_RE_VELOCITY, nu_from_re, velocity_mentioned_in
+
+    if target_re and spec.characteristic_length:
+        if velocity_mentioned_in(description):
+            expected_nu = nu_from_re(spec.inlet_velocity, spec.characteristic_length, target_re)
+            if abs(expected_nu - spec.nu) / max(spec.nu, 1e-12) > 0.05:
+                issues.append(SpecReviewIssue(
+                    key="nu",
+                    message=(
+                        f"入力 Re={target_re:g}, U={spec.inlet_velocity:g} m/s と ν が不一致"
+                        f"（期待 ν≈{expected_nu:g} m²/s）"
+                    ),
+                    suggested=round(expected_nu, 8),
+                    severity="error",
+                ))
+        else:
+            expected_u = DEFAULT_RE_VELOCITY
+            expected_nu = nu_from_re(DEFAULT_RE_VELOCITY, spec.characteristic_length, target_re)
+            if abs(spec.inlet_velocity - expected_u) / max(expected_u, 1e-9) > 0.05:
+                issues.append(SpecReviewIssue(
+                    key="inlet_velocity",
+                    message=f"Re={target_re:g} 指定時は U={expected_u:g} m/s を推奨",
+                    suggested=expected_u,
+                    severity="error",
+                ))
+            if abs(spec.nu - expected_nu) / max(expected_nu, 1e-12) > 0.05:
+                issues.append(SpecReviewIssue(
+                    key="nu",
+                    message=(
+                        f"Re={target_re:g}, U={expected_u:g} m/s から ν≈{expected_nu:g} m²/s を推奨"
+                    ),
+                    suggested=round(expected_nu, 8),
+                    severity="error",
+                ))
 
     # 類似チュートリアル典型値との乖離
     if profile.reference_hints:

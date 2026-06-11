@@ -49,8 +49,8 @@ def test_apply_auto_fixes_reduces_re():
     assert spec.inlet_velocity < 20.0
 
 
-def test_re_in_description_suggests_velocity():
+def test_re_only_suggests_unit_velocity():
     spec = _airfoil_spec(inlet_velocity=10.0, characteristic_length=0.1)
     fields = collect_clarifications(spec, "2D翼 Re=100000 定常")
     vel_field = next(f for f in fields if f.key == "inlet_velocity")
-    assert vel_field.suggested == 15.0  # 100000 * 1.5e-5 / 0.1
+    assert vel_field.suggested == 1.0

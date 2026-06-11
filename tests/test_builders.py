@@ -58,6 +58,21 @@ class TestBuilders:
         assert "writeControl    runTime" in out
         assert "purgeWrite      0" in out
 
+    def test_control_dict_karman_uses_adjust_time_step(self):
+        out = builders.build_control_dict(_spec(
+            steady_state=False,
+            case_type="cylinder_2d_ogrid",
+            phenomenon="karman_vortex_shedding",
+            solver="pimpleFoam",
+            inlet_velocity=1.0,
+            characteristic_length=1.0,
+        ))
+        assert "adjustTimeStep  yes;" in out
+        assert "maxCo           0.5;" in out
+        assert "maxDeltaT" in out
+        # maxCo * dx / U, dx≈0.007*L
+        assert "deltaT          0.0035" in out
+
     def test_u_field_ogrid_patches(self):
         patches = ["inlet", "outlet", "top", "bottom", "cylinder", "frontAndBack"]
         out = builders.build_u_field(_spec(case_type="cylinder_2d_ogrid"), patches)

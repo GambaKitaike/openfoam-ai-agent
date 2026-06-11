@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from ..models import SimulationSpec
 from .policy import compute_time_settings
+from .mesh_metrics import DEFAULT_MAX_CO
 
 FOAM_HEADER = """/*--------------------------------*- C++ -*----------------------------------*\\
   =========                 |
@@ -199,11 +200,12 @@ def build_control_dict(spec: SimulationSpec) -> str:
         wi = max(1, int(ts["write_interval"] / ts["delta_t"]))
         write_block = f"writeControl    timeStep;\nwriteInterval   {wi};"
     adjust = ""
-    if not spec.steady_state and spec.case_type != "cylinder_2d_ogrid":
+    if not spec.steady_state:
+        max_dt = ts.get("max_delta_t", ts["delta_t"] * 100)
         adjust = f"""
 adjustTimeStep  yes;
-maxCo           0.5;
-maxDeltaT       {ts['delta_t'] * 100:g};
+maxCo           {DEFAULT_MAX_CO:g};
+maxDeltaT       {max_dt:g};
 """
     return f"""{FOAM_HEADER}
     class       dictionary;

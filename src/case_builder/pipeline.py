@@ -15,6 +15,7 @@ from ..models import CaseBuildState, EnrichedContext, GenerationResult, Simulati
 from ..runner import OpenFOAMRunner
 from .file_generators import FileGenerator
 from .mesh_generators import render_block_mesh_dict
+from .mesh_metrics import apply_mesh_linked_timestep
 from .policy import read_patch_names
 
 console = Console()
@@ -91,6 +92,16 @@ class CaseBuildPipeline:
                     console.print("[yellow]  ⚠ checkMesh warnings[/yellow]")
                 state.patch_names = read_patch_names(str(case_path))
                 mesh_built = True
+                if not spec.steady_state:
+                    min_cell, delta_t, source = apply_mesh_linked_timestep(
+                        case_path,
+                        spec,
+                        mesh_params=context.mesh_params_suggestion,
+                    )
+                    console.print(
+                        f"  [dim]Δt メッシュ連動 ({source}): "
+                        f"dx≈{min_cell:g} m → deltaT={delta_t:g}[/dim]"
+                    )
             else:
                 log = bm.log_file or "log.blockMesh"
                 console.print(
