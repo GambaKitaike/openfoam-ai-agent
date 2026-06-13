@@ -115,7 +115,7 @@ class OpenFOAMOrchestrator:
             match = self.agent2.retrieve_match(spec, exclude_case_ids=exclude_case_ids)
 
             if match.context.reference_case_id:
-                spec = clarify_from_reference(spec, match.context, interactive=interactive)
+                spec, _ = clarify_from_reference(spec, match.context, interactive=interactive)
                 match.context.spec = spec
 
             console.print(Rule("[bold]Agent③  OpenFOAMGPT[/bold]"))

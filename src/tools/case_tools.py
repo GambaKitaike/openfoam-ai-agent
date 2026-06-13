@@ -46,6 +46,35 @@ def _format_bc_summary(boundary_conditions: dict) -> str:
     return "; ".join(parts)
 
 
+_DEFAULTED_FIELD_MESSAGES: dict[str, str] = {
+    "inlet_velocity": "流入速度が指定されていないため {value} m/s を仮定しました。結果が大きく変わる可能性があります",
+    "characteristic_length": "代表長さが指定されていないため {value} m を仮定しました。結果が大きく変わる可能性があります",
+    "nu": "動粘度 nu が指定されていないため {value:g} m²/s を仮定しました。結果が大きく変わる可能性があります",
+    "turbulence_model": "乱流モデルが指定されていないため {value} を仮定しました。結果が大きく変わる可能性があります",
+}
+
+
+def _warnings_from_defaulted_fields(spec: SimulationSpec) -> list[str]:
+    warnings: list[str] = []
+    for key in spec.defaulted_fields:
+        template = _DEFAULTED_FIELD_MESSAGES.get(key)
+        if template is None:
+            continue
+        value = getattr(spec, key, None)
+        if value is None:
+            continue
+        warnings.append(template.format(value=value))
+    return warnings
+
+
+def _format_warnings_section(warnings: list[str]) -> str:
+    if not warnings:
+        return ""
+    lines = ["Warnings:"]
+    lines.extend(f"- {msg}" for msg in warnings)
+    return "\n".join(lines) + "\n"
+
+
 def _format_spec_summary(spec: SimulationSpec) -> str:
     steady = "steady" if spec.steady_state else "transient"
     lines = [
@@ -152,8 +181,10 @@ def case_scaffold(
     )
 
     match = agent2.retrieve_match(spec)
+    scaffold_warnings: list[str] = _warnings_from_defaulted_fields(spec)
     if match.context.reference_case_id:
-        spec = clarify_from_reference(spec, match.context, interactive=False)
+        spec, ref_warnings = clarify_from_reference(spec, match.context, interactive=False)
+        scaffold_warnings.extend(ref_warnings)
         match.context.spec = spec
 
     context = match.context
@@ -181,6 +212,7 @@ def case_scaffold(
 
     content = (
         "Case scaffold complete (files only; run blockMesh/solver via run_openfoam).\n"
+        f"{_format_warnings_section(scaffold_warnings)}"
         f"{_format_spec_summary(spec)}\n"
         f"files_created: {len(gen.files_created)}\n"
         f"output: {gen.output_path}"

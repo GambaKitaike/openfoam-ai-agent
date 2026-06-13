@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -153,3 +153,39 @@ class TestAgentCoreLoop:
         assert "ステップ上限に達しました" in result
         assert str(MAX_STEPS) in result
         assert llm.chat_with_tools.call_count == MAX_STEPS
+
+    @patch("src.agent.core.save")
+    def test_save_called_when_history_grows(self, mock_save: MagicMock, tmp_path: Path) -> None:
+        target = tmp_path / "note.txt"
+        target.write_text("hello\n", encoding="utf-8")
+        state = SessionState(workspace=tmp_path)
+
+        tool_response_1 = ChatResponse(
+            text=None,
+            tool_calls=[_tool_call("read_file", {"path": "note.txt"}, call_id="call_1")],
+        )
+        tool_response_2 = ChatResponse(
+            text=None,
+            tool_calls=[_tool_call("list_files", {}, call_id="call_2")],
+        )
+        final_response = ChatResponse(text="完了", tool_calls=[])
+
+        responses = [tool_response_1, tool_response_2, final_response]
+
+        def chat_side_effect(**kwargs: Any) -> ChatResponse:
+            return responses.pop(0)
+
+        llm = MagicMock()
+        llm.chat_with_tools.side_effect = chat_side_effect
+
+        agent = AgentCore(llm=llm)
+        agent.run_turn("調べて", state)
+
+        assert mock_save.call_count == 4
+        for call in mock_save.call_args_list:
+            assert call.args[0] is state
+
+        tool_result_indices = [
+            index for index, message in enumerate(state.history) if message.get("role") == "tool"
+        ]
+        assert len(tool_result_indices) == 2

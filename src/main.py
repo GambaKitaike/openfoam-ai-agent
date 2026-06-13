@@ -310,6 +310,38 @@ def reconstruct(
 
 
 @app.command()
+def chat(
+    workspace: str = typer.Option(
+        ...,
+        "--workspace",
+        "-w",
+        help="OpenFOAM ケースのワークスペース（ケースディレクトリ）",
+    ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="workspace/.ofagent/session.json から前回セッションを復元",
+    ),
+    yolo: bool = typer.Option(
+        False,
+        "--yolo",
+        help="編集・実行の確認ゲートを省略（デフォルトは確認あり）",
+    ),
+):
+    """
+    【対話型エージェント】ケースディレクトリをワークスペースとしてチャットで操作する。
+
+    例: python -m src.main chat --workspace ./output/my_case
+    例: python -m src.main chat -w ./output/my_case --resume
+    """
+    from pathlib import Path
+
+    from .cli_chat import run_chat
+
+    run_chat(Path(workspace), resume=resume, yolo=yolo)
+
+
+@app.command()
 def check(
     case_dir: str = typer.Argument(..., help="チェックするOpenFOAMケースのディレクトリ"),
 ):

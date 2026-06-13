@@ -98,7 +98,7 @@ class TestCaseScaffold:
     ):
         spec = _sample_spec()
         context = _sample_context(spec)
-        mock_clarify.side_effect = lambda s, _ctx, **_: s
+        mock_clarify.side_effect = lambda s, _ctx, **_: (s, [])
 
         mock_agent1 = MagicMock()
         mock_agent1.extract.return_value = spec
@@ -154,7 +154,7 @@ class TestCaseScaffold:
     ):
         spec = _sample_spec()
         context = _sample_context(spec)
-        mock_clarify.side_effect = lambda s, _ctx, **_: s
+        mock_clarify.side_effect = lambda s, _ctx, **_: (s, [])
 
         mock_agent1 = MagicMock()
         mock_agent1.extract.return_value = spec
@@ -268,3 +268,45 @@ class TestCaseScaffold:
         assert result.ok is False
         assert "Case generation failed" in result.content
         mock_agent3.run.assert_not_called()
+
+    @patch("src.tools.case_tools.OpenFOAMGPTAgent")
+    @patch("src.tools.case_tools.PromptGenerationAgent")
+    @patch("src.tools.case_tools.PreprocessingAgent")
+    def test_scaffold_content_includes_defaulted_field_warnings(
+        self,
+        mock_pre_cls,
+        mock_agent2_cls,
+        mock_agent3_cls,
+        workspace: Path,
+    ):
+        spec = _sample_spec(
+            characteristic_length=1.0,
+            defaulted_fields=["characteristic_length"],
+        )
+        context = _sample_context(spec)
+
+        mock_agent1 = MagicMock()
+        mock_agent1.extract.return_value = spec
+        mock_agent1.complete_hearing.return_value = spec
+        mock_pre_cls.return_value = mock_agent1
+
+        mock_match = MagicMock()
+        mock_match.context = context
+        mock_match.context.reference_case_id = ""
+        mock_agent2 = MagicMock()
+        mock_agent2.retrieve_match.return_value = mock_match
+        mock_agent2_cls.return_value = mock_agent2
+
+        mock_agent3 = MagicMock()
+        mock_agent3._generate_case.return_value = _sample_generation(workspace)
+        mock_agent3_cls.return_value = mock_agent3
+
+        result = case_scaffold(
+            workspace,
+            "円柱周り2Dカルマン渦、流入0.15m/s、層流",
+            settings=FakeSettings(),
+        )
+
+        assert result.ok is True
+        assert "Warnings:" in result.content
+        assert "代表長さが指定されていないため" in result.content

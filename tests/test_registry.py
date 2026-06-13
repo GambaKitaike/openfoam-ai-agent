@@ -5,12 +5,14 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.agent.session import SessionState
+from src.tools.base import ToolResult
 from src.tools.registry import dispatch, schemas
 
 
@@ -67,6 +69,8 @@ class TestSchemas:
             "run_openfoam",
             "read_log",
             "foam_dict_check",
+            "case_scaffold",
+            "rag_search",
         }
 
 
@@ -159,8 +163,30 @@ class TestConfirmGate:
         assert mock_subprocess
         assert "run_openfoam: blockMesh" in prompts[0]
 
+    def test_solver_confirmation_warns_when_checkmesh_missing(
+        self,
+        tmp_path: Path,
+        mock_subprocess: list[dict[str, object]],
+    ) -> None:
+        state = SessionState(workspace=tmp_path)
+        prompts: list[str] = []
 
-class TestEditFileAutoDictCheck:
+        dispatch(
+            _tool_call("run_openfoam", {"command": "blockMesh"}),
+            state,
+            confirm_fn=lambda prompt: prompts.append(prompt) or True,
+        )
+        prompts.clear()
+
+        dispatch(
+            _tool_call("run_openfoam", {"command": "pimpleFoam"}),
+            state,
+            confirm_fn=lambda prompt: prompts.append(prompt) or False,
+        )
+
+        assert len(prompts) == 1
+        assert "run_openfoam: pimpleFoam" in prompts[0]
+        assert "checkMesh が未実行" in prompts[0]
     def test_system_dict_triggers_foam_dict_check(
         self,
         tmp_path: Path,
@@ -250,3 +276,109 @@ class TestRunRecord:
 
         assert result.ok is True
         assert "hello" in result.content
+
+    @patch("src.tools.registry.case_scaffold")
+    def test_case_scaffold_rejected(self, mock_scaffold: Any, tmp_path: Path) -> None:
+        state = SessionState(workspace=tmp_path)
+        prompts: list[str] = []
+
+        result = dispatch(
+            _tool_call(
+                "case_scaffold",
+                {
+                    "description": "2D cylinder Karman vortex, laminar",
+                    "stl_path": "constant/triSurface/cylinder.stl",
+                },
+            ),
+            state,
+            confirm_fn=lambda prompt: prompts.append(prompt) or False,
+        )
+
+        assert result.ok is False
+        assert "rejected" in result.content.lower()
+        assert len(prompts) == 1
+        assert "case_scaffold" in prompts[0]
+        assert "2D cylinder Karman vortex, laminar" in prompts[0]
+        assert "constant/triSurface/cylinder.stl" in prompts[0]
+        mock_scaffold.assert_not_called()
+
+    @patch("src.tools.registry.case_scaffold")
+    def test_case_scaffold_approved_returns_spec_summary(
+        self,
+        mock_scaffold: Any,
+        tmp_path: Path,
+        base_spec_data: dict[str, Any],
+    ) -> None:
+        spec_data = {
+            "mesh_template": "box_2d",
+            **base_spec_data,
+            "solver": "pimpleFoam",
+            "case_type": "cylinder_2d_ogrid",
+        }
+        mock_scaffold.return_value = ToolResult(
+            ok=True,
+            content=(
+                "Case scaffold complete (files only; run blockMesh/solver via run_openfoam).\n"
+                "solver: pimpleFoam\n"
+                "case_type: cylinder_2d_ogrid\n"
+                "flow: transient, 2D, turbulence=laminar"
+            ),
+            data={"spec": spec_data},
+        )
+        state = SessionState(workspace=tmp_path)
+        prompts: list[str] = []
+
+        result = dispatch(
+            _tool_call(
+                "case_scaffold",
+                {
+                    "description": "円柱周り2Dカルマン渦、流入0.15m/s、層流",
+                    "stl_path": "geometry/cylinder.stl",
+                },
+            ),
+            state,
+            confirm_fn=lambda prompt: prompts.append(prompt) or True,
+        )
+
+        assert result.ok is True
+        assert "solver: pimpleFoam" in result.content
+        assert "case_type: cylinder_2d_ogrid" in result.content
+        assert len(prompts) == 1
+        assert "円柱周り2Dカルマン渦、流入0.15m/s、層流" in prompts[0]
+        assert "geometry/cylinder.stl" in prompts[0]
+        mock_scaffold.assert_called_once_with(
+            tmp_path,
+            "円柱周り2Dカルマン渦、流入0.15m/s、層流",
+            stl_path="geometry/cylinder.stl",
+        )
+        assert state.spec is not None
+        assert state.spec.solver == "pimpleFoam"
+        assert state.spec.case_type == "cylinder_2d_ogrid"
+
+    @patch("src.tools.registry.rag_search")
+    def test_rag_search_dispatched_without_confirmation(
+        self,
+        mock_rag_search: Any,
+        tmp_path: Path,
+    ) -> None:
+        mock_rag_search.return_value = ToolResult(
+            ok=True,
+            content="RAG search (case, top_k=3):\n1. Sample case",
+            data={"results": [], "scope": "case"},
+        )
+        state = SessionState(workspace=tmp_path)
+
+        result = dispatch(
+            _tool_call("rag_search", {"query": "fvSchemes div scheme example"}),
+            state,
+            confirm_fn=lambda _: False,
+        )
+
+        assert result.ok is True
+        assert "RAG search" in result.content
+        mock_rag_search.assert_called_once_with(
+            "fvSchemes div scheme example",
+            scope="case",
+            top_k=3,
+            filters=None,
+        )

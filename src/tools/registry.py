@@ -7,13 +7,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from src.agent.session import RunRecord, SessionState
+from src.agent.session import RunRecord, SessionState, _deserialize_spec
 from src.tools.base import ToolResult
+from src.tools.case_tools import case_scaffold
 from src.tools.foam_tools import foam_dict_check, read_log, run_openfoam
 from src.tools.fs_tools import edit_file, list_files, read_file, write_file
+from src.tools.rag_tools import rag_search
 
-_CONFIRM_TOOLS = frozenset({"edit_file", "write_file", "run_openfoam"})
+_CONFIRM_TOOLS = frozenset({"edit_file", "write_file", "run_openfoam", "case_scaffold"})
 _FOAM_DICT_PREFIXES = ("0", "system", "constant")
+_MESH_SOLVER_COMMANDS = frozenset({"checkMesh", "potentialFoam", "simpleFoam", "pimpleFoam"})
 
 _TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
@@ -153,6 +156,61 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "case_scaffold",
+            "description": (
+                "Generate an OpenFOAM case from natural language (files only; no solver execution)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "Natural language description of the simulation.",
+                    },
+                    "stl_path": {
+                        "type": "string",
+                        "description": "Optional relative path to an STL geometry file.",
+                    },
+                },
+                "required": ["description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rag_search",
+            "description": "Search the ChromaDB knowledge base for similar cases or file examples.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query text.",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["case", "file"],
+                        "description": "Collection to search. Default: 'case'.",
+                    },
+                    "filters": {
+                        "type": "object",
+                        "description": "Optional metadata filters (e.g. solver, steady_or_transient).",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "Number of results to return (3-5). Default: 3.",
+                        "minimum": 3,
+                        "maximum": 5,
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -216,7 +274,17 @@ def _build_write_confirmation(path: str, content: str) -> str:
     return f"write_file: {path}\n--- content preview ---\n{preview}"
 
 
-def _build_run_confirmation(command: str, args: list[str] | str | None, timeout: int) -> str:
+def _build_case_scaffold_confirmation(description: str, stl_path: str | None) -> str:
+    stl_text = stl_path if stl_path else "(none)"
+    return f"case_scaffold\ndescription: {description}\nstl_path: {stl_text}"
+
+
+def _build_run_confirmation(
+    command: str,
+    args: list[str] | str | None,
+    timeout: int,
+    state: SessionState,
+) -> str:
     if isinstance(args, list):
         args_text = " ".join(args)
     elif isinstance(args, str):
@@ -224,7 +292,14 @@ def _build_run_confirmation(command: str, args: list[str] | str | None, timeout:
     else:
         args_text = ""
     cmd_line = f"{command}{f' {args_text}' if args_text else ''}"
-    return f"run_openfoam: {cmd_line}\ntimeout: {timeout}s"
+    lines = [f"run_openfoam: {cmd_line}", f"timeout: {timeout}s"]
+    if command in _MESH_SOLVER_COMMANDS and command != "checkMesh":
+        if not any(record.command == "checkMesh" for record in state.run_records):
+            lines.append(
+                "warning: checkMesh が未実行です。"
+                " blockMesh 後に run_openfoam checkMesh を先に実行してください。"
+            )
+    return "\n".join(lines)
 
 
 def _build_confirmation(name: str, args: dict[str, Any], state: SessionState) -> str:
@@ -239,7 +314,9 @@ def _build_confirmation(name: str, args: dict[str, Any], state: SessionState) ->
         return _build_write_confirmation(args["path"], args["content"])
     if name == "run_openfoam":
         timeout = int(args.get("timeout", 1800))
-        return _build_run_confirmation(args["command"], args.get("args"), timeout)
+        return _build_run_confirmation(args["command"], args.get("args"), timeout, state)
+    if name == "case_scaffold":
+        return _build_case_scaffold_confirmation(args["description"], args.get("stl_path"))
     return f"{name}: {json.dumps(args, ensure_ascii=False)}"
 
 
@@ -315,6 +392,21 @@ def _execute_tool(name: str, args: dict[str, Any], state: SessionState) -> ToolR
     if name == "foam_dict_check":
         return foam_dict_check(workspace, args["path"])
 
+    if name == "case_scaffold":
+        return case_scaffold(
+            workspace,
+            args["description"],
+            stl_path=args.get("stl_path"),
+        )
+
+    if name == "rag_search":
+        return rag_search(
+            args["query"],
+            scope=args.get("scope", "case"),
+            top_k=int(args.get("top_k", 3)),
+            filters=args.get("filters"),
+        )
+
     return ToolResult(ok=False, content=f"Unknown tool: {name}")
 
 
@@ -331,4 +423,9 @@ def dispatch(
         if not confirm_fn(confirmation):
             return ToolResult(ok=False, content="Operation rejected by user.")
 
-    return _execute_tool(name, args, state)
+    result = _execute_tool(name, args, state)
+    if name == "case_scaffold" and result.ok and result.data:
+        spec_data = result.data.get("spec")
+        if spec_data is not None:
+            state.spec = _deserialize_spec(spec_data)
+    return result

@@ -33,6 +33,7 @@ class SimulationSpec:
     boundary_conditions: dict = field(default_factory=dict)
     mesh_params: dict = field(default_factory=dict)
     defaults_applied: list[str] = field(default_factory=list)  # LLMが補完した項目
+    defaulted_fields: list[str] = field(default_factory=list)  # data 欠損時の決定的デフォルト
     raw_llm_output: dict = field(default_factory=dict)
     stl_path: str = ""                   # ユーザー提供STLファイルのパス（snappyHexMesh用）
 

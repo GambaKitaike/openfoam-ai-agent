@@ -190,6 +190,9 @@ def edit_file(workspace: Path, path: str, old_str: str, new_str: str) -> ToolRes
     if not target.is_file():
         return _error(f"Not a file: {path}")
 
+    if old_str == new_str:
+        return _error("old_str と new_str が同一です。変更内容を再確認してください")
+
     text = target.read_text(encoding="utf-8", errors="replace")
     count = text.count(old_str)
     if count == 0:

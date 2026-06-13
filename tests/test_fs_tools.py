@@ -104,6 +104,17 @@ class TestEditFile:
         assert "not unique" in result.content.lower()
         assert target.read_text() == "foo bar foo"
 
+    def test_reject_noop_edit(self, tmp_path: Path) -> None:
+        target = tmp_path / "note.txt"
+        original = "endTime 1;\n"
+        target.write_text(original)
+
+        result = edit_file(tmp_path, "note.txt", "endTime 1;", "endTime 1;")
+
+        assert result.ok is False
+        assert "同一" in result.content
+        assert target.read_text() == original
+
 
 class TestWriteFile:
     def test_create_new_file(self, tmp_path: Path) -> None:

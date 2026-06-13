@@ -62,6 +62,7 @@ class ClarificationField:
     suggested: float | str
     reason: str
     parser: str = "float"  # float | str
+    warn_only: bool = False  # True のとき spec を書き換えず警告のみ
 
 
 def _mentioned_in(text: str, *keywords: str) -> bool:
@@ -84,9 +85,10 @@ def _recalc_re(spec: SimulationSpec) -> None:
 def collect_clarifications(
     spec: SimulationSpec,
     description: str,
-) -> list[ClarificationField]:
-    """確認が必要なフィールド一覧を返す。"""
+) -> tuple[list[ClarificationField], list[str]]:
+    """確認が必要なフィールド一覧と、書き換え不要の警告を返す。"""
     fields: list[ClarificationField] = []
+    warnings: list[str] = []
     defaults = set(spec.defaults_applied or [])
     hints = PHENOMENON_HINTS.get(spec.phenomenon, {})
     target_re = _parse_re_from_description(description)
@@ -171,28 +173,40 @@ def collect_clarifications(
     if spec.re_number:
         if spec.turbulence_model == "laminar" and spec.re_number > RE_WARN_LAMINAR:
             if not any(f.key == "inlet_velocity" for f in fields):
-                capped_v = RE_WARN_LAMINAR * spec.nu / spec.characteristic_length
-                fields.append(ClarificationField(
-                    key="inlet_velocity",
-                    label="流速 (m/s)",
-                    current=spec.inlet_velocity,
-                    suggested=round(capped_v, 4),
-                    reason=f"層流指定ですが Re={spec.re_number:,.0f} と高すぎます",
-                ))
+                if velocity_mentioned_in(description):
+                    warnings.append(
+                        f"層流指定ですが Re≈{spec.re_number:,.0f} です。"
+                        f"発散する可能性があります（指定流速 {spec.inlet_velocity:g} m/s を維持）"
+                    )
+                else:
+                    capped_v = RE_WARN_LAMINAR * spec.nu / spec.characteristic_length
+                    fields.append(ClarificationField(
+                        key="inlet_velocity",
+                        label="流速 (m/s)",
+                        current=spec.inlet_velocity,
+                        suggested=round(capped_v, 4),
+                        reason=f"層流指定ですが Re={spec.re_number:,.0f} と高すぎます",
+                    ))
         elif spec.steady_state and spec.re_number > RE_WARN_STEADY:
             if not any(f.key == "inlet_velocity" for f in fields):
-                hint_re = hints.get("re_target", RE_WARN_STEADY)
-                capped_v = float(hint_re) * spec.nu / spec.characteristic_length
-                fields.append(ClarificationField(
-                    key="inlet_velocity",
-                    label="流速 (m/s)",
-                    current=spec.inlet_velocity,
-                    suggested=round(capped_v, 4),
-                    reason=(
-                        f"定常解析で Re={spec.re_number:,.0f} と高めです "
-                        f"(目安 Re≈{hint_re:,.0f})"
-                    ),
-                ))
+                if velocity_mentioned_in(description):
+                    warnings.append(
+                        f"定常解析で Re≈{spec.re_number:,.0f} と高めです。"
+                        f"収束が困難な可能性があります（指定流速 {spec.inlet_velocity:g} m/s を維持）"
+                    )
+                else:
+                    hint_re = hints.get("re_target", RE_WARN_STEADY)
+                    capped_v = float(hint_re) * spec.nu / spec.characteristic_length
+                    fields.append(ClarificationField(
+                        key="inlet_velocity",
+                        label="流速 (m/s)",
+                        current=spec.inlet_velocity,
+                        suggested=round(capped_v, 4),
+                        reason=(
+                            f"定常解析で Re={spec.re_number:,.0f} と高めです "
+                            f"(目安 Re≈{hint_re:,.0f})"
+                        ),
+                    ))
 
     # 重複 key を除去（最初のものを残す）
     seen: set[str] = set()
@@ -201,12 +215,14 @@ def collect_clarifications(
         if f.key not in seen:
             seen.add(f.key)
             unique.append(f)
-    return unique
+    return unique, warnings
 
 
 def apply_auto_fixes(spec: SimulationSpec, fields: list[ClarificationField]) -> SimulationSpec:
-    """非対話モード: 推奨値を自動適用。"""
+    """非対話モード: 推奨値を自動適用（warn_only はスキップ）。"""
     for f in fields:
+        if f.warn_only:
+            continue
         if f.parser == "str":
             setattr(spec, f.key, str(f.suggested))
         else:
@@ -225,18 +241,29 @@ def clarify_spec(
     """
     未指定パラメータを確認し spec を更新する。
 
-    interactive=False のときは推奨値を自動適用。
+    interactive=False のときは推奨値を自動適用（ユーザー明示値は警告のみ）。
     """
-    fields = collect_clarifications(spec, description)
-    if not fields:
+    fields, warnings = collect_clarifications(spec, description)
+    if not fields and not warnings:
         return spec
 
     if not interactive:
-        console.print(
-            f"  [dim]未指定パラメータ {len(fields)} 件 — 推奨値を自動適用 "
-            f"(対話する場合は --interactive)[/dim]"
-        )
-        return apply_auto_fixes(spec, fields)
+        if warnings:
+            for msg in warnings:
+                console.print(f"  [yellow]警告: {msg}[/yellow]")
+        if fields:
+            console.print(
+                f"  [dim]未指定パラメータ {len(fields)} 件 — 推奨値を自動適用 "
+                f"(対話する場合は --interactive)[/dim]"
+            )
+            return apply_auto_fixes(spec, fields)
+        return spec
+
+    if warnings:
+        for msg in warnings:
+            console.print(f"  [yellow]警告: {msg}[/yellow]")
+    if not fields:
+        return spec
 
     console.print(Panel(
         "入力に含まれていない（または LLM が補完した）パラメータがあります。\n"
@@ -513,21 +540,45 @@ def hearing_loop_with_agent2(
         else:
             auto = [i for i in issues if not i.user_locked]
             locked = [i for i in issues if i.user_locked]
+            from ..case_builder.policy import velocity_mentioned_in
+            skipped: list = []
             if auto:
-                apply_review_fixes(spec, auto, respect_user_lock=True)
-                if trace is not None:
-                    trace.add(
-                        round_num=round_num,
-                        from_agent="Agent①",
-                        to_agent="Agent②",
-                        kind="review_fixes",
-                        summary=f"自動修正 {len(auto)} 件",
-                        spec=spec_snapshot(spec),
+                applicable = []
+                for issue in auto:
+                    if (
+                        issue.key == "inlet_velocity"
+                        and velocity_mentioned_in(description)
+                    ):
+                        skipped.append(issue)
+                        continue
+                    applicable.append(issue)
+                if applicable:
+                    apply_review_fixes(spec, applicable, respect_user_lock=True)
+                    if trace is not None:
+                        trace.add(
+                            round_num=round_num,
+                            from_agent="Agent①",
+                            to_agent="Agent②",
+                            kind="review_fixes",
+                            summary=f"自動修正 {len(applicable)} 件",
+                            spec=spec_snapshot(spec),
+                        )
+                    console.print(
+                        f"  [dim]Agent② が {len(applicable)} 件を自動修正"
+                        f"{f'（{len(locked)} 件は説明文の指定を維持）' if locked else ''}"
+                        f"{f'（{len(skipped)} 件は指定流速を維持）' if skipped else ''}[/dim]"
                     )
-                console.print(
-                    f"  [dim]Agent② が {len(auto)} 件を自動修正"
-                    f"{f'（{len(locked)} 件は説明文の指定を維持）' if locked else ''}[/dim]"
-                )
+                elif locked or skipped:
+                    parts = []
+                    if locked:
+                        parts.append(f"{len(locked)} 件は説明文の指定を維持")
+                    if skipped:
+                        parts.append(f"{len(skipped)} 件は指定流速を維持")
+                    console.print(
+                        f"  [dim]Agent② が {len(issues)} 件の矛盾を検出 — "
+                        f"{'、'.join(parts)}[/dim]"
+                    )
+                    break
             elif locked:
                 console.print(
                     f"  [dim]Agent② が {len(locked)} 件の矛盾を検出 — "
@@ -608,16 +659,26 @@ def _apply_clarification_fields(spec: SimulationSpec, fields: list[Clarification
     _recalc_re(spec)
 
 
+def _reference_clarification_warnings(fields: list[ClarificationField]) -> list[str]:
+    """参照ケースとの差分を警告文に変換（spec は書き換えない）。"""
+    warnings: list[str] = []
+    for f in fields:
+        warnings.append(
+            f"{f.label}: {f.reason} — 現値 {f.current}、参照典型値 {f.suggested}"
+        )
+    return warnings
+
+
 def clarify_from_reference(
     spec: SimulationSpec,
     context: EnrichedContext,
     interactive: bool = True,
-) -> SimulationSpec:
+) -> tuple[SimulationSpec, list[str]]:
     """
     Phase A: RAG 選定後、参照ケースの典型条件をユーザーに提案する。
     """
     if not context.reference_case_id or context.reference_typical_params is None:
-        return spec
+        return spec, []
 
     # 現象タグが一致しない参照ケース（general 等）の典型値は上書きしない
     ref_phenomenon = context.reference_phenomenon or "general"
@@ -630,12 +691,12 @@ def clarify_from_reference(
             f"  [dim]参照ケースの現象 ({ref_phenomenon}) が "
             f"{spec.phenomenon} と異なるため典型条件の自動適用をスキップ[/dim]"
         )
-        return spec
+        return spec, []
 
     ref = context.reference_typical_params
     fields = collect_reference_clarifications(spec, ref)
     if not fields:
-        return spec
+        return spec, []
 
     ref_lines = ref.to_display_lines()
     body = "\n".join(ref_lines) if ref_lines else ref.summary_ja[:300]
@@ -643,11 +704,12 @@ def clarify_from_reference(
         body += f"\n\n{ref.summary_ja[:200]}"
 
     if not interactive:
+        warnings = _reference_clarification_warnings(fields)
         console.print(
-            f"  [dim]参照ケース {ref.case_id} の典型条件 {len(fields)} 件を自動適用[/dim]"
+            f"  [dim]参照ケース {ref.case_id} の典型条件 {len(fields)} 件 — "
+            f"自動適用せず警告のみ[/dim]"
         )
-        _apply_clarification_fields(spec, fields)
-        return spec
+        return spec, warnings
 
     console.print(Panel(
         body or "(典型条件を抽出できませんでした)",
@@ -662,12 +724,12 @@ def clarify_from_reference(
     )
 
     if use_ref == "いいえ":
-        return spec
+        return spec, []
 
     if use_ref == "はい":
         _apply_clarification_fields(spec, fields)
         console.print("  [green]参照ケースの典型条件を適用しました[/green]")
-        return spec
+        return spec, []
 
     for f in fields:
         if f.parser == "str":
@@ -694,4 +756,4 @@ def clarify_from_reference(
         spec.defaults_applied.append(f"from_reference_{f.key}")
 
     _recalc_re(spec)
-    return spec
+    return spec, []

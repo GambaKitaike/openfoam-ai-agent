@@ -200,10 +200,23 @@ class PreprocessingAgent:
     def _build_spec(self, data: dict, original_description: str) -> SimulationSpec:
         """dict から SimulationSpec を構築し、欠損値を補完する。"""
         defaults_applied = data.get("defaults_applied", [])
+        defaulted_fields: list[str] = []
 
         # 速度の数値化（単位が混入していても除去）
-        raw_velocity = data.get("inlet_velocity", data.get("boundary_conditions", {}).get("inlet", {}).get("velocity", 10.0))
+        raw_velocity = data.get("inlet_velocity")
+        if raw_velocity is None:
+            raw_velocity = data.get("boundary_conditions", {}).get("inlet", {}).get("velocity")
+        if raw_velocity is None:
+            defaulted_fields.append("inlet_velocity")
+            raw_velocity = 10.0
         inlet_velocity = self._to_float(raw_velocity, 10.0)
+
+        if data.get("characteristic_length") is None:
+            defaulted_fields.append("characteristic_length")
+        if data.get("nu") is None:
+            defaulted_fields.append("nu")
+        if data.get("turbulence_model") is None:
+            defaulted_fields.append("turbulence_model")
 
         # mesh_template の決定（case_type と dimensions から自動選択）
         dimensions = int(data.get("dimensions", 3))
@@ -252,6 +265,7 @@ class PreprocessingAgent:
             boundary_conditions=data.get("boundary_conditions", {}),
             mesh_params=data.get("mesh_params", {}),
             defaults_applied=defaults_applied,
+            defaulted_fields=defaulted_fields,
             raw_llm_output=data,
         )
 

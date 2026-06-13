@@ -20,7 +20,7 @@ _CONVERGENCE_RULES = """\
 
 _STANDARD_WORKFLOW = """\
 【標準ワークフロー】
-- 新規ケース: case_scaffold → checkMesh → (potentialFoam) → ソルバー → summarize
+- 新規ケース: case_scaffold → run_openfoam blockMesh → run_openfoam checkMesh → (potentialFoam) → ソルバー → summarize
 - エラー時: read_log(errors) → 原因の仮説 → rag_search（必要時）→ edit_file → 再実行
 """
 
@@ -28,6 +28,10 @@ _BEHAVIOR_RULES = """\
 【行動規範】
 - 編集は最小差分（edit_file の str_replace）。全文書き換えは避ける
 - 実行・編集の前に、次に何をするか 1 行で宣言する
+- ユーザーの指示にファイル編集と実行の両方が含まれる場合、編集をすべて完了・適用してから実行ツールを呼ぶ（実行を先に済ませて編集を後回しにしない）
+- 「半分」「倍」などの相対的な数値変更や、特定の値への変更を指示された場合は、必ず対象ファイルを read_file で現在値を確認してから edit_file する
+- blockMesh の直後は必ず run_openfoam checkMesh を1回実行してからソルバーへ進む（スキップ禁止）
+- foam_dict_check は foamDictionary による dict 構文チェックであり、checkMesh（メッシュ品質確認）とは別物
 - 不確かな物理設定（Re 数域、乱流モデル、境界条件の解釈）はユーザーに確認する
 - OpenFOAM dict（0/, system/, constant/）編集後は構文チェック結果を確認する
 """

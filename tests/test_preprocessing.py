@@ -104,6 +104,42 @@ class TestBuildSpec:
         spec = self._build({"inlet_velocity": "5.0 m/s"})
         assert spec.inlet_velocity == pytest.approx(5.0)
 
+    def test_defaulted_fields_when_keys_missing(self):
+        agent = make_agent()
+        data = {
+            "solver": "simpleFoam",
+            "case_type": "channel_2d",
+            "dimensions": 2,
+            "turbulence_model": "laminar",
+            "steady_state": True,
+            "inlet_velocity": 0.15,
+            "description": "test",
+            "boundary_conditions": {},
+            "mesh_params": {},
+            "defaults_applied": [],
+        }
+        spec = agent._build_spec(data, "test")
+        assert "characteristic_length" in spec.defaulted_fields
+        assert "nu" in spec.defaulted_fields
+        assert "inlet_velocity" not in spec.defaulted_fields
+        assert "turbulence_model" not in spec.defaulted_fields
+
+    def test_defaulted_fields_inlet_from_boundary_conditions(self):
+        agent = make_agent()
+        data = {
+            "solver": "simpleFoam",
+            "case_type": "channel_2d",
+            "dimensions": 2,
+            "turbulence_model": "laminar",
+            "steady_state": True,
+            "description": "test",
+            "boundary_conditions": {"inlet": {"velocity": 0.15}},
+            "mesh_params": {},
+            "defaults_applied": [],
+        }
+        spec = agent._build_spec(data, "test")
+        assert "inlet_velocity" not in spec.defaulted_fields
+
 
 # ─────────────────────────────────────────────
 # STL 指定時の case_type 上書きロジック

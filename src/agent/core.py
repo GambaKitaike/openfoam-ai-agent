@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from src.agent.prompts import build_system_prompt
-from src.agent.session import Message, SessionState
+from src.agent.session import Message, SessionState, save
 from src.llm_client import ChatResponse, LLMClient
 from src.tools import registry
 from src.tools.base import ToolResult
@@ -114,6 +114,7 @@ class AgentCore:
 
     def run_turn(self, user_input: str, state: SessionState) -> str:
         state.history.append(user_message(user_input))
+        save(state)
 
         for step in range(1, MAX_STEPS + 1):
             truncate_history_if_needed(state.history)
@@ -128,10 +129,12 @@ class AgentCore:
                 for call in response.tool_calls:
                     result = registry.dispatch(call, state, self.confirm_fn)
                     state.history.append(tool_result_message(call, result))
+                    save(state)
                 continue
 
             final_text = response.text or ""
             state.history.append(assistant_message(final_text))
+            save(state)
             return final_text
 
         summary = _build_step_limit_summary(state, MAX_STEPS)
