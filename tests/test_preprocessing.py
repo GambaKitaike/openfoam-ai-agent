@@ -140,6 +140,26 @@ class TestBuildSpec:
         spec = agent._build_spec(data, "test")
         assert "inlet_velocity" not in spec.defaulted_fields
 
+    def test_defaulted_fields_from_llm_defaults_applied(self):
+        """LLM が data に推測値を埋め defaults_applied に申告した場合も検出される"""
+        agent = make_agent()
+        data = {
+            "solver": "simpleFoam",
+            "case_type": "channel_2d",
+            "dimensions": 2,
+            "turbulence_model": "kOmegaSST",
+            "steady_state": True,
+            "inlet_velocity": 10.0,
+            "characteristic_length": 1.0,
+            "nu": 1.5e-5,
+            "description": "test",
+            "boundary_conditions": {},
+            "mesh_params": {},
+            "defaults_applied": ["characteristic_length: 1.0"],
+        }
+        spec = agent._build_spec(data, "test")
+        assert "characteristic_length" in spec.defaulted_fields
+
 
 # ─────────────────────────────────────────────
 # STL 指定時の case_type 上書きロジック

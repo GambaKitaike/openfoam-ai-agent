@@ -19,6 +19,26 @@ from .spec_clarification import clarify_spec, hearing_loop_with_agent2
 
 console = Console()
 
+_DEFAULTED_FIELD_KEYS = frozenset({
+    "inlet_velocity",
+    "characteristic_length",
+    "nu",
+    "turbulence_model",
+})
+
+
+def _keys_from_defaults_applied(defaults_applied: list) -> set[str]:
+    """defaults_applied エントリからフィールド名を抽出する（"key: value" または "key"）。"""
+    keys: set[str] = set()
+    for item in defaults_applied:
+        if not isinstance(item, str):
+            continue
+        key = item.split(":", 1)[0].strip()
+        if key:
+            keys.add(key)
+    return keys
+
+
 PREPROCESSING_SYSTEM_PROMPT = """あなたはOpenFOAMの前処理専門エキスパートです。
 ユーザーの自然言語入力から解析仕様を正確に抽出してください。
 
@@ -217,6 +237,10 @@ class PreprocessingAgent:
             defaulted_fields.append("nu")
         if data.get("turbulence_model") is None:
             defaulted_fields.append("turbulence_model")
+
+        for key in _keys_from_defaults_applied(defaults_applied):
+            if key in _DEFAULTED_FIELD_KEYS and key not in defaulted_fields:
+                defaulted_fields.append(key)
 
         # mesh_template の決定（case_type と dimensions から自動選択）
         dimensions = int(data.get("dimensions", 3))
