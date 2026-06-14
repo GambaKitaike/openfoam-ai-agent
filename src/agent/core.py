@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from src.agent.prompts import build_system_prompt
-from src.agent.session import Message, SessionState, save
+from src.agent.session import Message, SessionState, save, sanitize_utf8_text
 from src.llm_client import ChatResponse, LLMClient
 from src.tools import registry
 from src.tools.base import ToolResult
@@ -38,7 +38,7 @@ def tool_result_message(tool_call: dict[str, Any], result: ToolResult) -> Messag
     return {
         "role": "tool",
         "tool_call_id": tool_call["id"],
-        "content": result.content,
+        "content": sanitize_utf8_text(result.content),
     }
 
 

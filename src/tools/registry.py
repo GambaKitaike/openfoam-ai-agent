@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from src.agent.session import RunRecord, SessionState, _deserialize_spec
+from src.agent.session import RunRecord, SessionState, _deserialize_spec, sanitize_utf8_text
 from src.tools.base import ToolResult
 from src.tools.case_tools import case_scaffold
 from src.tools.foam_tools import foam_dict_check, read_log, run_openfoam
@@ -328,6 +328,13 @@ def _append_dict_check(result: ToolResult, workspace: Path, path: str) -> ToolRe
     return ToolResult(ok=result.ok and check.ok, content=content, data=result.data)
 
 
+def _sanitize_tool_result(result: ToolResult) -> ToolResult:
+    content = sanitize_utf8_text(result.content)
+    if content == result.content:
+        return result
+    return ToolResult(ok=result.ok, content=content, data=result.data)
+
+
 def _build_run_summary(command: str, exit_code: int, finished_at: datetime, result: ToolResult) -> str:
     status = "OK" if exit_code == 0 else "FAILED"
     lines = [f"{command} finished at {finished_at.isoformat()} — {status} (exit {exit_code})"]
@@ -370,6 +377,7 @@ def _execute_tool(name: str, args: dict[str, Any], state: SessionState) -> ToolR
             args=args.get("args"),
             timeout=timeout,
         )
+        result = _sanitize_tool_result(result)
         finished_at = _utc_now()
         exit_code = int(result.data.get("exit_code", 1)) if result.data else (0 if result.ok else 1)
         log_rel = result.data.get("log_path", f"log.{args['command']}") if result.data else f"log.{args['command']}"
@@ -387,7 +395,7 @@ def _execute_tool(name: str, args: dict[str, Any], state: SessionState) -> ToolR
         return result
 
     if name == "read_log":
-        return read_log(workspace, args["log_path"], args["mode"])
+        return _sanitize_tool_result(read_log(workspace, args["log_path"], args["mode"]))
 
     if name == "foam_dict_check":
         return foam_dict_check(workspace, args["path"])
@@ -428,4 +436,4 @@ def dispatch(
         spec_data = result.data.get("spec")
         if spec_data is not None:
             state.spec = _deserialize_spec(spec_data)
-    return result
+    return _sanitize_tool_result(result)

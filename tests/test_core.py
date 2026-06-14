@@ -50,6 +50,12 @@ class TestMessageHelpers:
         assert message["tool_call_id"] == "call_1"
         assert message["content"] == "file body"
 
+    def test_tool_result_message_sanitizes_surrogates(self) -> None:
+        call = _tool_call("read_log", {"log_path": "log.blockMesh", "mode": "tail"})
+        result = ToolResult(ok=True, content="bad\udce3log")
+        message = tool_result_message(call, result)
+        assert message["content"] == "bad?log"
+
 
 class TestTruncateHistory:
     def test_truncates_oldest_tool_results_when_over_budget(self) -> None:

@@ -12,6 +12,25 @@ from src.models import SimulationSpec
 Message = dict[str, Any]
 
 
+def sanitize_utf8_text(text: str) -> str:
+    """UTF-8 にエンコード不能な文字（孤立サロゲート等）を安全な文字に置換する。"""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def sanitize_for_json(value: Any) -> Any:
+    """JSON 保存前に dict/list/str を再帰的に UTF-8 安全な値へ正規化する。"""
+    if isinstance(value, str):
+        return sanitize_utf8_text(value)
+    if isinstance(value, dict):
+        return {
+            (sanitize_utf8_text(key) if isinstance(key, str) else key): sanitize_for_json(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [sanitize_for_json(item) for item in value]
+    return value
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -116,11 +135,9 @@ def save(state: SessionState) -> None:
     state.updated_at = _utc_now()
     session_file = _session_path(state.workspace)
     session_file.parent.mkdir(parents=True, exist_ok=True)
-    payload = _serialize_state(state)
-    session_file.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    payload = sanitize_for_json(_serialize_state(state))
+    json_text = json.dumps(payload, ensure_ascii=False, indent=2)
+    session_file.write_bytes(json_text.encode("utf-8", errors="replace"))
 
 
 def load(workspace: Path) -> SessionState:
