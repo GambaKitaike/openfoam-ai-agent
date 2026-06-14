@@ -24,8 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install pydantic pydantic-settings rich typer pytest
-          # OpenAI / Anthropic はスタブで置き換えるため不要
+          pip install -r requirements.txt
 
       - name: pytest（LLM・OpenFOAM 不要テストのみ）
         env:
